@@ -5,7 +5,7 @@ module wayland
 // The compositor advertises its capabilities as "globals": a name, an interface
 // name and the interface version. Applications list them with `globals()` and
 // then bind the ones they need. Binding is where the typed protocol modules
-// take over: `wayland.bind_compositor(conn, global)` returns a `WlCompositor`
+// take over: `wl.bind_wl_compositor(conn, global)` returns a `WlCompositor`
 // proxy, while `bind_global()` is the untyped building block.
 
 // Global is one object advertised by the compositor.

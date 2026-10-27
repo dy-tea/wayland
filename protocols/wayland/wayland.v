@@ -2256,8 +2256,8 @@ fn (mut s WlShellSurfaceSink) on_event(msg &wayland.Message) !bool {
 		}
 		1 {
 			edges := msg.arg_u32(0)!
-			width := msg.arg_i32(1)!
-			height := msg.arg_i32(2)!
+			width := msg.arg_int(1)!
+			height := msg.arg_int(2)!
 			s.listener.configure(s.proxy, edges, width, height)
 		}
 		2 {
@@ -2664,7 +2664,7 @@ fn (mut s WlSurfaceSink) on_event(msg &wayland.Message) !bool {
 			s.listener.leave(s.proxy, output)
 		}
 		2 {
-			factor := msg.arg_i32(0)!
+			factor := msg.arg_int(0)!
 			s.listener.preferred_buffer_scale(s.proxy, factor)
 		}
 		3 {
@@ -3369,12 +3369,12 @@ fn (mut s WlPointerSink) on_event(msg &wayland.Message) !bool {
 		}
 		8 {
 			axis := msg.arg_u32(0)!
-			discrete := msg.arg_i32(1)!
+			discrete := msg.arg_int(1)!
 			s.listener.axis_discrete(s.proxy, axis, discrete)
 		}
 		9 {
 			axis := msg.arg_u32(0)!
-			value120 := msg.arg_i32(1)!
+			value120 := msg.arg_int(1)!
 			s.listener.axis_value120(s.proxy, axis, value120)
 		}
 		10 {
@@ -3681,8 +3681,8 @@ fn (mut s WlKeyboardSink) on_event(msg &wayland.Message) !bool {
 			s.listener.modifiers(s.proxy, serial, mods_depressed, mods_latched, mods_locked, group)
 		}
 		5 {
-			rate := msg.arg_i32(0)!
-			delay := msg.arg_i32(1)!
+			rate := msg.arg_int(0)!
+			delay := msg.arg_int(1)!
 			s.listener.repeat_info(s.proxy, rate, delay)
 		}
 		else {
@@ -3923,7 +3923,7 @@ fn (mut s WlTouchSink) on_event(msg &wayland.Message) !bool {
 			time := msg.arg_u32(1)!
 			surface_id := msg.arg_id(2)!
 			surface := wl_surface_proxy(s.proxy.conn, surface_id)
-			id := msg.arg_i32(3)!
+			id := msg.arg_int(3)!
 			x := msg.arg_fixed(4)!
 			y := msg.arg_fixed(5)!
 			s.listener.down(s.proxy, serial, time, surface, id, x, y)
@@ -3931,12 +3931,12 @@ fn (mut s WlTouchSink) on_event(msg &wayland.Message) !bool {
 		1 {
 			serial := msg.arg_u32(0)!
 			time := msg.arg_u32(1)!
-			id := msg.arg_i32(2)!
+			id := msg.arg_int(2)!
 			s.listener.up(s.proxy, serial, time, id)
 		}
 		2 {
 			time := msg.arg_u32(0)!
-			id := msg.arg_i32(1)!
+			id := msg.arg_int(1)!
 			x := msg.arg_fixed(2)!
 			y := msg.arg_fixed(3)!
 			s.listener.motion(s.proxy, time, id, x, y)
@@ -3948,13 +3948,13 @@ fn (mut s WlTouchSink) on_event(msg &wayland.Message) !bool {
 			s.listener.cancel(s.proxy)
 		}
 		5 {
-			id := msg.arg_i32(0)!
+			id := msg.arg_int(0)!
 			major := msg.arg_fixed(1)!
 			minor := msg.arg_fixed(2)!
 			s.listener.shape(s.proxy, id, major, minor)
 		}
 		6 {
-			id := msg.arg_i32(0)!
+			id := msg.arg_int(0)!
 			orientation := msg.arg_fixed(1)!
 			s.listener.orientation(s.proxy, id, orientation)
 		}
@@ -4161,28 +4161,28 @@ mut:
 fn (mut s WlOutputSink) on_event(msg &wayland.Message) !bool {
 	match msg.opcode {
 		0 {
-			x := msg.arg_i32(0)!
-			y := msg.arg_i32(1)!
-			physical_width := msg.arg_i32(2)!
-			physical_height := msg.arg_i32(3)!
-			subpixel := msg.arg_i32(4)!
+			x := msg.arg_int(0)!
+			y := msg.arg_int(1)!
+			physical_width := msg.arg_int(2)!
+			physical_height := msg.arg_int(3)!
+			subpixel := msg.arg_int(4)!
 			make := msg.arg_string(5)!
 			model := msg.arg_string(6)!
-			transform := msg.arg_i32(7)!
+			transform := msg.arg_int(7)!
 			s.listener.geometry(s.proxy, x, y, physical_width, physical_height, subpixel, make, model, transform)
 		}
 		1 {
 			flags := msg.arg_u32(0)!
-			width := msg.arg_i32(1)!
-			height := msg.arg_i32(2)!
-			refresh := msg.arg_i32(3)!
+			width := msg.arg_int(1)!
+			height := msg.arg_int(2)!
+			refresh := msg.arg_int(3)!
 			s.listener.mode(s.proxy, flags, width, height, refresh)
 		}
 		2 {
 			s.listener.done(s.proxy)
 		}
 		3 {
-			factor := msg.arg_i32(0)!
+			factor := msg.arg_int(0)!
 			s.listener.scale(s.proxy, factor)
 		}
 		4 {

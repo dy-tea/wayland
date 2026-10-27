@@ -1,7 +1,7 @@
 module main
 
 import wayland
-import wayland.protocols.wayland
+import wayland.protocols.wayland as wl
 
 // Binds the seat and prints what the compositor reports about it.
 //
@@ -18,25 +18,25 @@ mut:
 	capabilities u32
 }
 
-fn (mut listener SeatListener) capabilities(_ wayland.WlSeat, capabilities u32) {
+fn (mut listener SeatListener) capabilities(_ wl.WlSeat, capabilities u32) {
 	listener.has_caps = true
 	listener.capabilities = capabilities
 }
 
-fn (mut listener SeatListener) name(_ wayland.WlSeat, name string) {
+fn (mut listener SeatListener) name(_ wl.WlSeat, name string) {
 	listener.has_name = true
 	listener.name = name
 }
 
 fn describe_capabilities(capabilities u32) string {
 	mut names := []string{}
-	if capabilities & wayland.wl_seat_capability_pointer != 0 {
+	if capabilities & wl.wl_seat_capability_pointer != 0 {
 		names << 'pointer'
 	}
-	if capabilities & wayland.wl_seat_capability_keyboard != 0 {
+	if capabilities & wl.wl_seat_capability_keyboard != 0 {
 		names << 'keyboard'
 	}
-	if capabilities & wayland.wl_seat_capability_touch != 0 {
+	if capabilities & wl.wl_seat_capability_touch != 0 {
 		names << 'touch'
 	}
 	if names.len == 0 {
@@ -55,7 +55,7 @@ fn main() {
 		eprintln('this compositor does not advertise wl_seat')
 		return
 	}
-	mut seat := wayland.bind_wl_seat(conn, seat_global)!
+	mut seat := wl.bind_wl_seat(conn, seat_global)!
 	mut listener := SeatListener{}
 	seat.set_listener(&listener)!
 	// The compositor sends name and capabilities right after the bind.

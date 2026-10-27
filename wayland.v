@@ -7,7 +7,8 @@
 //  1. connect to the compositor with `wayland.connect()`
 //  2. discover the available globals with `Connection.globals()`
 //  3. bind the ones you need through a generated protocol module, for example
-//     `wayland.bind_compositor(conn, global)`
+//     `wl.bind_wl_compositor(conn, global)`, where `wl` is the core protocol
+//     module, imported as `import wayland.protocols.wayland as wl`
 //  4. register listeners with the generated `set_listener()` methods, which are
 //     plain V interfaces with `mut` methods
 //  5. drive the protocol with `Connection.dispatch()`, `dispatch_pending()` and

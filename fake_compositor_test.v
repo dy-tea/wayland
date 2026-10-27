@@ -2,6 +2,7 @@ module wayland
 
 import os
 import wayland.protocols.wayland
+import wayland.protocols.xdg_shell
 
 // End to end tests against a compositor implemented in this file.
 //
@@ -14,6 +15,11 @@ import wayland.protocols.wayland
 // socketpair(2) fills an array of C ints, so the declaration must use i32: V's
 // int is a machine word, twice as wide on 64 bit systems.
 fn C.socketpair(domain int, typ int, protocol int, sv &i32) int
+
+// pwrite lets the fake compositor write through the shared memory descriptors
+// the client sends, which is how the tests check that both sides really look at
+// the same memory.
+fn C.pwrite(fd int, buf voidptr, count u64, offset i64) i64
 
 fn new_pair() !(&Connection, int) {
 	mut pair := [2]i32{}
@@ -386,4 +392,266 @@ fn test_dispatch_blocks_until_an_event_arrives() {
 	assert listener.got
 	assert listener.fd > 0
 	os.fd_close(listener.fd)
+}
+
+// server_read_available blocks until the client writes something, then drains
+// everything it has already sent, descriptors included. The flow test below
+// knows how many messages each step produces, but not how the socket splits
+// them, so it collects and then splits them itself.
+fn server_read_available(fd int) !Received {
+	first := receive_bytes(fd, 65536, false)!
+	mut data := first.data
+	mut fds := first.fds.clone()
+	for {
+		more := receive_bytes(fd, 65536, true)!
+		if more.n == 0 {
+			break
+		}
+		data << more.data
+		fds << more.fds
+	}
+	return Received{
+		n:    data.len
+		data: data
+		fds:  fds
+	}
+}
+
+// --- the window flow ---------------------------------------------------------
+//
+// The tests below follow `examples/window` step by step: an xdg_toplevel is
+// created, configured, acked and presented from a shared memory buffer, the
+// compositor releases the buffer, and finally it asks for the window to close.
+
+// FlowState is what the listeners report back to the loop that drives the flow,
+// the same way the window example does.
+struct FlowState {
+mut:
+	configured bool
+	serial     u32
+	frames     int
+	closed     bool
+}
+
+struct FlowSurfaceListener {
+mut:
+	state &FlowState
+}
+
+fn (mut listener FlowSurfaceListener) configure(_ xdg_shell.XdgSurface, serial u32) {
+	listener.state.serial = serial
+	listener.state.configured = true
+}
+
+struct FlowToplevelListener {
+mut:
+	state &FlowState
+}
+
+fn (mut listener FlowToplevelListener) configure(_ xdg_shell.XdgToplevel, width i32, height i32, states []u8) {
+	// The fake compositor leaves the size to the client and sends no states.
+	assert width == 0
+	assert height == 0
+	assert states.len == 0
+}
+
+fn (mut listener FlowToplevelListener) close(_ xdg_shell.XdgToplevel) {
+	listener.state.closed = true
+}
+
+fn (mut listener FlowToplevelListener) configure_bounds(_ xdg_shell.XdgToplevel, _width i32, _height i32) {
+}
+
+fn (mut listener FlowToplevelListener) wm_capabilities(_ xdg_shell.XdgToplevel, _capabilities []u8) {
+}
+
+struct FlowCallbackListener {
+mut:
+	state &FlowState
+}
+
+fn (mut listener FlowCallbackListener) done(_ wayland.WlCallback, _callback_data u32) {
+	listener.state.frames++
+}
+
+fn test_shm_buffer_rejects_bad_arguments() {
+	mut client, server_fd := new_pair()!
+	defer {
+		client.close()
+		os.fd_close(server_fd)
+	}
+	shm_id := client.alloc_id()!
+	client.register_object(shm_id, 'wl_shm', &wayland.wl_shm_desc)!
+	shm := wayland.wl_shm_proxy(client, shm_id)
+	if _ := ShmBuffer.new(shm, 0, 64, wayland.wl_shm_format_xrgb8888) {
+		assert false, 'a buffer with a zero width must be rejected'
+	} else {
+		assert err.msg().contains('positive size')
+	}
+	if _ := ShmBuffer.new(shm, 64, 64, wayland.wl_shm_format_yuyv) {
+		assert false, 'a format that is not 32 bits per pixel must be rejected'
+	} else {
+		assert err.msg().contains('32 bit')
+	}
+}
+
+fn test_xdg_toplevel_window_flow() {
+	mut client, server_fd := new_pair()!
+	defer {
+		client.close()
+		os.fd_close(server_fd)
+	}
+	// A compositor with the three globals a window needs.
+	compositor_global, _ := event_bytes(u32(2), 0, [
+		ArgValue(u32(1)),
+		ArgValue('wl_compositor'),
+		ArgValue(u32(6)),
+	])
+	shm_global, _ := event_bytes(u32(2), 0, [ArgValue(u32(2)), ArgValue('wl_shm'), ArgValue(u32(3))])
+	wm_base_global, _ := event_bytes(u32(2), 0, [
+		ArgValue(u32(3)),
+		ArgValue('xdg_wm_base'),
+		ArgValue(u32(6)),
+	])
+	done, _ := event_bytes(u32(3), 0, [ArgValue(u32(1))])
+	server_write(server_fd, join_bytes([compositor_global, shm_global, wm_base_global, done]), [])!
+
+	// --- the client learns the globals and binds them ---
+	globals := client.globals()!
+	assert globals.len == 3
+	startup := split_messages(server_read(server_fd, 24)!.data)
+	assert startup.len == 2 // wl_display.get_registry and wl_display.sync
+	compositor := wayland.bind_wl_compositor(client, globals.find('wl_compositor')!)!
+	shm := wayland.bind_wl_shm(client, globals.find('wl_shm')!)!
+	wm_base := xdg_shell.bind_xdg_wm_base(client, globals.find('xdg_wm_base')!)!
+	binds := split_messages(server_read(server_fd, 108)!.data)
+	assert binds.len == 3
+	assert get_u32_at(binds[0], 0) == 2 // one registry carries all the binds
+	assert get_u32_at(binds[0], 8) == 1 // the name of the wl_compositor global
+	assert get_u32_at(binds[2], 8) == 3 // the name of the xdg_wm_base global
+
+	// --- the client creates the toplevel and asks for a configure ---
+	surface := compositor.create_surface()!
+	xdg_surface := wm_base.get_xdg_surface(surface)!
+	toplevel := xdg_surface.get_toplevel()!
+	toplevel.set_title('test window')!
+	toplevel.set_app_id('dev.wayland.test')!
+	mut state := FlowState{}
+	mut surface_listener := FlowSurfaceListener{
+		state: &state
+	}
+	xdg_surface.set_listener(&surface_listener)!
+	mut toplevel_listener := FlowToplevelListener{
+		state: &state
+	}
+	toplevel.set_listener(&toplevel_listener)!
+	surface.commit()!
+	client.flush()!
+	setup := split_messages(server_read_available(server_fd)!.data)
+	assert setup.len == 6
+	assert get_u32_at(setup[0], 0) == compositor.id
+	assert int(get_u32_at(setup[0], 4) & 0xffff) == 0 // wl_compositor.create_surface
+	assert get_u32_at(setup[1], 0) == wm_base.id
+	assert int(get_u32_at(setup[1], 4) & 0xffff) == 2 // xdg_wm_base.get_xdg_surface
+	assert get_u32_at(setup[1], 12) == surface.id
+	assert get_u32_at(setup[2], 0) == xdg_surface.id
+	assert int(get_u32_at(setup[2], 4) & 0xffff) == 1 // xdg_surface.get_toplevel
+	assert get_u32_at(setup[5], 0) == surface.id
+	assert int(get_u32_at(setup[5], 4) & 0xffff) == 6 // wl_surface.commit
+	assert setup[5].len == 8 // the first commit carries no buffer
+
+	// --- the compositor configures the window ---
+	toplevel_configure, _ := event_bytes(toplevel.id, 0, [ArgValue(i32(0)), ArgValue(i32(0)),
+		ArgValue([]u8{})])
+	surface_configure, _ := event_bytes(xdg_surface.id, 0, [ArgValue(u32(7))])
+	server_write(server_fd, join_bytes([toplevel_configure, surface_configure]), [])!
+	assert client.dispatch_pending()! == 2
+	assert state.configured
+	assert state.serial == 7
+
+	// --- the client acks the configure and presents a frame ---
+	xdg_surface.ack_configure(state.serial)!
+	buffer := ShmBuffer.new(shm, 64, 32, wayland.wl_shm_format_xrgb8888)!
+	mut pixels := buffer.pixels()
+	for i in 0 .. pixels.len {
+		pixels[i] = u8(i & 0x7f)
+	}
+	assert !buffer.busy
+	buffer.attach(surface)!
+	assert buffer.busy
+	mut callback_listener := FlowCallbackListener{
+		state: &state
+	}
+	callback := surface.frame()!
+	callback.set_listener(&callback_listener)!
+	surface.commit()!
+	client.flush()!
+	present := server_read_available(server_fd)!
+	assert present.fds.len == 1
+
+	// The ack, the pool and buffer creation, the attach, the damage, the frame
+	// callback and the commit arrive together.
+	acked := split_messages(present.data)
+	assert acked.len == 7
+	assert get_u32_at(acked[0], 0) == xdg_surface.id
+	assert int(get_u32_at(acked[0], 4) & 0xffff) == 4 // xdg_surface.ack_configure
+	assert get_u32_at(acked[0], 8) == 7
+	// wl_shm.create_pool: the new pool id and the size it covers; the descriptor
+	// travels out of band and is checked below.
+	assert get_u32_at(acked[1], 0) == shm.id
+	assert int(get_u32_at(acked[1], 4) & 0xffff) == 0 // wl_shm.create_pool
+	assert acked[1].len == 16
+	assert get_u32_at(acked[1], 12) == u32(64 * 4 * 32)
+	// wl_shm_pool.create_buffer: offset, width, height, stride and format.
+	assert int(get_u32_at(acked[2], 4) & 0xffff) == 0 // wl_shm_pool.create_buffer
+	assert acked[2].len == 32
+	assert get_u32_at(acked[2], 12) == 0 // offset
+	assert get_u32_at(acked[2], 16) == 64 // width
+	assert get_u32_at(acked[2], 20) == 32 // height
+	assert get_u32_at(acked[2], 24) == 256 // stride
+	assert get_u32_at(acked[2], 28) == wayland.wl_shm_format_xrgb8888
+	// wl_surface.attach, damage, frame and commit.
+	assert get_u32_at(acked[3], 0) == surface.id
+	assert int(get_u32_at(acked[3], 4) & 0xffff) == 1 // wl_surface.attach
+	assert get_u32_at(acked[3], 8) == buffer.object.id
+	assert int(get_u32_at(acked[4], 4) & 0xffff) == 2 // wl_surface.damage
+	assert get_u32_at(acked[4], 16) == 64 // width
+	assert get_u32_at(acked[4], 20) == 32 // height
+	assert int(get_u32_at(acked[5], 4) & 0xffff) == 3 // wl_surface.frame
+	assert get_u32_at(acked[5], 8) == callback.id
+	assert int(get_u32_at(acked[6], 4) & 0xffff) == 6 // wl_surface.commit
+
+	// The descriptor the compositor received is the memory the client maps:
+	// writing through it changes the client's pixels.
+	probe := [u8(9), u8(8), u8(7), u8(6)]
+	C.pwrite(present.fds[0], probe.data, u64(4), i64(0))
+	assert buffer.pixels()[0] == u8(9)
+	assert buffer.pixels()[1] == u8(8)
+	assert buffer.pixels()[2] == u8(7)
+	assert buffer.pixels()[3] == u8(6)
+	assert buffer.pixels()[4] == u8(4) // the rest of the mapping is untouched
+	os.fd_close(present.fds[0])
+
+	// --- the compositor releases the buffer and asks for the next frame ---
+	release, _ := event_bytes(buffer.object.id, 0, [])
+	callback_done, _ := event_bytes(callback.id, 0, [ArgValue(u32(0))])
+	server_write(server_fd, join_bytes([release, callback_done]), [])!
+	assert client.dispatch_pending()! == 2
+	assert !buffer.busy
+	assert state.frames == 1
+
+	// --- the compositor closes the window ---
+	close_event, _ := event_bytes(toplevel.id, 1, [])
+	server_write(server_fd, close_event, [])!
+	assert client.dispatch_pending()! == 1
+	assert state.closed
+
+	// Destroying the buffer gives the pool and the shared memory back.
+	buffer.destroy()
+	client.flush()!
+	destroyed := split_messages(server_read_available(server_fd)!.data)
+	assert destroyed.len == 2
+	assert get_u32_at(destroyed[0], 0) == buffer.object.id
+	assert int(get_u32_at(destroyed[0], 4) & 0xffff) == 0 // wl_buffer.destroy
+	assert int(get_u32_at(destroyed[1], 4) & 0xffff) == 1 // wl_shm_pool.destroy
 }

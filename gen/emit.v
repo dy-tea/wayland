@@ -20,7 +20,8 @@ import strings
 // protocol being generated.
 pub struct ExternIface {
 pub:
-	// module is the V module name, also used as the import alias.
+	// module is the name the module is referenced by, which differs from its
+	// import path when it needs an alias (see `alias_for_module`).
 	module string
 	// path is the full import path.
 	path string
@@ -104,7 +105,7 @@ fn (mut e Emitter) type_for(iface string) string {
 	if iface !in e.missing {
 		e.missing << iface
 	}
-	return 'wayland.Object'
+	return '${root_module}.Object'
 }
 
 // desc_for returns an expression yielding the descriptor of an interface.
@@ -119,7 +120,7 @@ fn (mut e Emitter) desc_for(iface string) string {
 	if iface != '' && iface !in e.missing {
 		e.missing << iface
 	}
-	return '&wayland.opaque_iface'
+	return '&${root_module}.opaque_iface'
 }
 
 // proxy_for returns an expression building a typed proxy for an object id.
@@ -131,7 +132,7 @@ fn (mut e Emitter) proxy_for(iface string, conn string, id string) string {
 		e.imports[external.module] = external.path
 		return '${external.module}.${proxy_fn(iface)}(${conn}, ${id})'
 	}
-	return "wayland.Object{ id: ${id}, conn: ${conn}, iface: '${iface}' }"
+	return "${root_module}.Object{ id: ${id}, conn: ${conn}, iface: '${iface}' }"
 }
 
 // qualified_proxy_fn returns the proxy constructor of an interface, qualified
@@ -616,7 +617,7 @@ fn (mut e Emitter) assemble() string {
 	}
 	header.writeln('module ${e.module}')
 	header.writeln('')
-	header.writeln('import wayland')
+	header.writeln('import ${root_module}')
 	mut aliases := e.imports.keys()
 	aliases.sort()
 	for alias in aliases {

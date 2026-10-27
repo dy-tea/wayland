@@ -3,13 +3,13 @@
 A Wayland client library for [V](https://vlang.io), written in pure V.
 
 * **No libwayland.** The wire protocol, the object id table, version negotiation and event dispatch are implemented here, in V.
-* **No C glue** beyond the socket calls that carry file descriptors. The only  file that talks to the C library is `transport.v`, and everything it exposes is wrapped in safe helpers.
+* **No C glue** beyond the socket calls that carry file descriptors. The only file that declares C functions is `transport.v`, and everything it exposes is wrapped in safe helpers; shared memory is mapped through the standard library's `os.mmap`.
 * **No `unsafe` in the API you use.** Marshalling, listening, id bookkeeping and file descriptor passing are all handled by the library.
 * **Generated from the protocol XML.** Interfaces, requests, events, enums, listeners and version negotiation are generated from the official XML files, so adding a protocol is one command. Generated code is `v fmt` clean.
 
 ```v
 import wayland
-import wayland.protocols.wayland
+import wayland.protocols.wayland as wl
 
 struct SeatListener {
 mut:
@@ -17,11 +17,11 @@ mut:
 	name         string
 }
 
-fn (mut listener SeatListener) capabilities(proxy wayland.WlSeat, capabilities u32) {
+fn (mut listener SeatListener) capabilities(proxy wl.WlSeat, capabilities u32) {
 	listener.capabilities = capabilities
 }
 
-fn (mut listener SeatListener) name(proxy wayland.WlSeat, name string) {
+fn (mut listener SeatListener) name(proxy wl.WlSeat, name string) {
 	listener.name = name
 }
 
@@ -35,13 +35,18 @@ fn main() {
 		eprintln('this compositor has no seat')
 		return
 	}
-	mut seat := wayland.bind_wl_seat(conn, seat_global)!
+	mut seat := wl.bind_wl_seat(conn, seat_global)!
 	mut listener := SeatListener{}
 	seat.set_listener(&listener)!
 	conn.roundtrip()! // the compositor sends capabilities and name on bind
 	println('${listener.name}: capabilities ${listener.capabilities}')
 }
 ```
+
+The `as wl` is not decoration: the core protocol module is called `wayland`
+like the library itself, and a V file cannot import two modules with the same
+name. The generated modules import it the same way, so the two spellings are
+everywhere: `wayland.` for the library, `wl.` for the core protocol.
 
 ## Status
 
@@ -59,11 +64,17 @@ What works today:
   `wl_keyboard` keymaps and friends
 * destructor tracking: after `destroy()` the proxy rejects further requests and
   the id is recycled once the compositor confirms it with `wl_display.delete_id`
+* shared memory buffers: `ShmBuffer` bundles the memory file, the mapping, the
+  pool, the buffer and the compositor release tracking, so drawing is writing
+  bytes into a slice
+* a real window: `examples/window` opens an xdg-shell toplevel, follows its
+  configure events and animates it from a frame loop until it is closed
 
 What is not here yet:
 
 * the server side (implementing a compositor), and protocol *helpers* above the
-  generated layer: a `Window` type, an shm buffer allocator, clipboard helpers
+  generated layer: a reusable window type, and the input side (keyboard,
+  pointer, clipboard, cursors)
 * an event loop: the application owns its main loop. Use `dispatch_pending()`
   with `Connection.fd` in your own poll/select, or `roundtrip()` for a blocking
   client
@@ -75,11 +86,38 @@ What is not here yet:
 ```sh
 v run examples/list_globals        # every global the compositor advertises
 v run examples/seat                # bind a seat and print its events
+v run examples/window              # a real xdg-shell window, close it to quit
+v run examples/window -- --frames 60   # present 60 frames, then exit
 v test .                           # unit, generator and end to end tests
 ```
 
-The tests in `live_compositor_test.v` talk to the running compositor and are
-skipped when there is no Wayland session.
+`fake_compositor_test.v` implements a compositor in the test file and drives a
+whole window through it: configure, ack, a shared memory buffer built from the
+descriptor the fake compositor receives, the frame callback, the close request
+and the teardown. The tests in `live_compositor_test.v` talk to the running
+compositor and are skipped when there is no Wayland session; they never attach a
+buffer, so they do not put a window on the screen.
+
+## Shared memory buffers
+
+`wayland.ShmBuffer` wraps the whole shared memory path: the file (created in
+`XDG_RUNTIME_DIR`, or the temporary directory, and unlinked right away), the
+mapping, the `wl_shm` pool and the `wl_buffer` on top of it. Pixels are a byte
+view of the mapping, so drawing is writing bytes; `attach()` attaches the buffer
+to a surface and damages all of it, and `busy` stays true until the compositor
+sends `wl_buffer.release`, which is what keeps a frame loop from drawing into a
+buffer that is still being read:
+
+```v
+mut buffer := wayland.ShmBuffer.new(shm, width, height, wl.wl_shm_format_xrgb8888)!
+mut pixels := buffer.pixels()
+pixels[0] = u8(0x40) // xrgb8888 stores four bytes per pixel, blue first
+buffer.attach(surface)!
+surface.commit()!
+```
+
+The helper accepts the 32 bit `wl_shm` formats, which is what every compositor
+supports. `examples/window` is the full version of the loop.
 
 ## Code generation
 
@@ -97,6 +135,16 @@ The tool writes `<out>/<protocol>/<protocol>.v` and formats it with `v fmt`
 same run get fully typed arguments for each other's interfaces; interfaces from
 protocols you do not generate are passed as `wayland.Object`, so an incomplete
 set still compiles.
+
+Generated modules import the library as `wayland` and every referenced protocol
+under its own module name - except the core protocol, which is imported as `wl`,
+because both are called `wayland` and a V file cannot import two modules under
+the same name. Client code uses the same spelling:
+
+```v
+import wayland
+import wayland.protocols.wayland as wl
+```
 
 For every interface in a protocol the generated module contains:
 
@@ -170,8 +218,10 @@ instead of failing, so a partial protocol set keeps working.
 * [`connection.v`](connection.v) — `Connection`: dispatch, ids, requests
 * [`registry.v`](registry.v) — globals: discovery and binding
 * [`wire.v`](wire.v) and [`args.v`](args.v) — the wire format and argument values
+* [`shm.v`](shm.v) — shared memory buffers for drawing
 * [`gen/emit.v`](gen/emit.v) — what a generated module looks like, and why
 * [`examples/seat`](examples/seat) — listeners end to end
+* [`examples/window`](examples/window) — a real window: roles, configure, frame loop
 
 ## Protocol files and license
 

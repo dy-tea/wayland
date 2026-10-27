@@ -21,7 +21,7 @@
 module viewporter
 
 import wayland
-import wayland.protocols.wayland
+import wayland.protocols.wayland as wl
 
 // --- wp_viewporter ---
 
@@ -77,7 +77,7 @@ pub fn (proxy &WpViewporter) destroy() ! {
 }
 
 // Instantiate an interface extension for the given wl_surface to crop and scale its content.
-pub fn (proxy &WpViewporter) get_viewport(surface wayland.WlSurface) !WpViewport {
+pub fn (proxy &WpViewporter) get_viewport(surface wl.WlSurface) !WpViewport {
 	id_id := proxy.conn.alloc_id()!
 	id_object := wayland.Object{
 		id:    id_id

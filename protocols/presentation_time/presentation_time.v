@@ -21,7 +21,7 @@
 module presentation_time
 
 import wayland
-import wayland.protocols.wayland
+import wayland.protocols.wayland as wl
 
 // --- wp_presentation ---
 
@@ -130,7 +130,7 @@ pub fn (proxy &WpPresentation) destroy() ! {
 }
 
 // Request presentation feedback for the current content submission on the given surface.
-pub fn (proxy &WpPresentation) feedback(surface wayland.WlSurface) !WpPresentationFeedback {
+pub fn (proxy &WpPresentation) feedback(surface wl.WlSurface) !WpPresentationFeedback {
 	callback_id := proxy.conn.alloc_id()!
 	callback_object := wayland.Object{
 		id:    callback_id
@@ -233,7 +233,7 @@ pub fn wp_presentation_feedback_proxy(conn &wayland.Connection, id u32) WpPresen
 pub interface WpPresentationFeedbackListener {
 	// As presentation can be synchronized to only one output at a time, this event tells which output it was.
 mut:
-	sync_output(proxy WpPresentationFeedback, output wayland.WlOutput)
+	sync_output(proxy WpPresentationFeedback, output wl.WlOutput)
 	// The associated content update was displayed to the user at the indicated time (tv_sec_hi/lo, tv_nsec).
 	presented(proxy WpPresentationFeedback, tv_sec_hi u32, tv_sec_lo u32, tv_nsec u32, refresh u32, seq_hi u32, seq_lo u32, flags u32)
 	// The content update was never displayed to the user.
@@ -244,7 +244,7 @@ mut:
 // objects without a listener never fail on incoming events.
 pub struct NoopWpPresentationFeedbackListener {}
 
-pub fn (mut listener NoopWpPresentationFeedbackListener) sync_output(_proxy WpPresentationFeedback, _output wayland.WlOutput) {
+pub fn (mut listener NoopWpPresentationFeedbackListener) sync_output(_proxy WpPresentationFeedback, _output wl.WlOutput) {
 }
 
 pub fn (mut listener NoopWpPresentationFeedbackListener) presented(_proxy WpPresentationFeedback, _tv_sec_hi u32, _tv_sec_lo u32, _tv_nsec u32, _refresh u32, _seq_hi u32, _seq_lo u32, _flags u32) {
@@ -263,7 +263,7 @@ fn (mut s WpPresentationFeedbackSink) on_event(msg &wayland.Message) !bool {
 	match msg.opcode {
 		0 {
 			output_id := msg.arg_id(0)!
-			output := wayland.wl_output_proxy(s.proxy.conn, output_id)
+			output := wl.wl_output_proxy(s.proxy.conn, output_id)
 			s.listener.sync_output(s.proxy, output)
 		}
 		1 {

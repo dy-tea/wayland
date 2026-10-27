@@ -24,7 +24,7 @@
 module xdg_shell
 
 import wayland
-import wayland.protocols.wayland
+import wayland.protocols.wayland as wl
 
 // --- xdg_wm_base ---
 
@@ -169,7 +169,7 @@ pub fn (proxy &XdgWmBase) create_positioner() !XdgPositioner {
 }
 
 // This creates an xdg_surface for the given surface.
-pub fn (proxy &XdgWmBase) get_xdg_surface(surface wayland.WlSurface) !XdgSurface {
+pub fn (proxy &XdgWmBase) get_xdg_surface(surface wl.WlSurface) !XdgSurface {
 	id_id := proxy.conn.alloc_id()!
 	id_object := wayland.Object{
 		id:    id_id
@@ -915,8 +915,8 @@ mut:
 fn (mut s XdgToplevelSink) on_event(msg &wayland.Message) !bool {
 	match msg.opcode {
 		0 {
-			width := msg.arg_i32(0)!
-			height := msg.arg_i32(1)!
+			width := msg.arg_int(0)!
+			height := msg.arg_int(1)!
 			states := msg.arg_array(2)!
 			s.listener.configure(s.proxy, width, height, states)
 		}
@@ -924,8 +924,8 @@ fn (mut s XdgToplevelSink) on_event(msg &wayland.Message) !bool {
 			s.listener.close(s.proxy)
 		}
 		2 {
-			width := msg.arg_i32(0)!
-			height := msg.arg_i32(1)!
+			width := msg.arg_int(0)!
+			height := msg.arg_int(1)!
 			s.listener.configure_bounds(s.proxy, width, height)
 		}
 		3 {
@@ -970,7 +970,7 @@ pub fn (proxy &XdgToplevel) set_app_id(app_id string) ! {
 }
 
 // Clients implementing client-side decorations might want to show a context menu when right-clicking on the deco...
-pub fn (proxy &XdgToplevel) show_window_menu(seat wayland.WlSeat, serial u32, x i32, y i32) ! {
+pub fn (proxy &XdgToplevel) show_window_menu(seat wl.WlSeat, serial u32, x i32, y i32) ! {
 	proxy.conn.request(proxy.id, 4, [
 		wayland.ArgValue(wayland.ObjectRef{ id: seat.id }),
 		wayland.ArgValue(serial),
@@ -980,7 +980,7 @@ pub fn (proxy &XdgToplevel) show_window_menu(seat wayland.WlSeat, serial u32, x 
 }
 
 // Start an interactive, user-driven move of the surface.
-pub fn (proxy &XdgToplevel) move(seat wayland.WlSeat, serial u32) ! {
+pub fn (proxy &XdgToplevel) move(seat wl.WlSeat, serial u32) ! {
 	proxy.conn.request(proxy.id, 5, [
 		wayland.ArgValue(wayland.ObjectRef{ id: seat.id }),
 		wayland.ArgValue(serial),
@@ -988,7 +988,7 @@ pub fn (proxy &XdgToplevel) move(seat wayland.WlSeat, serial u32) ! {
 }
 
 // Start a user-driven, interactive resize of the surface.
-pub fn (proxy &XdgToplevel) resize(seat wayland.WlSeat, serial u32, edges u32) ! {
+pub fn (proxy &XdgToplevel) resize(seat wl.WlSeat, serial u32, edges u32) ! {
 	proxy.conn.request(proxy.id, 6, [
 		wayland.ArgValue(wayland.ObjectRef{ id: seat.id }),
 		wayland.ArgValue(serial),
@@ -1017,7 +1017,7 @@ pub fn (proxy &XdgToplevel) unset_maximized() ! {
 }
 
 // Make the surface fullscreen.
-pub fn (proxy &XdgToplevel) set_fullscreen(output ?wayland.WlOutput) ! {
+pub fn (proxy &XdgToplevel) set_fullscreen(output ?wl.WlOutput) ! {
 	output_id := if value := output { value.id } else { u32(0) }
 	proxy.conn.request(proxy.id, 11, [wayland.ArgValue(wayland.ObjectRef{ id: output_id })])!
 }
@@ -1214,10 +1214,10 @@ mut:
 fn (mut s XdgPopupSink) on_event(msg &wayland.Message) !bool {
 	match msg.opcode {
 		0 {
-			x := msg.arg_i32(0)!
-			y := msg.arg_i32(1)!
-			width := msg.arg_i32(2)!
-			height := msg.arg_i32(3)!
+			x := msg.arg_int(0)!
+			y := msg.arg_int(1)!
+			width := msg.arg_int(2)!
+			height := msg.arg_int(3)!
 			s.listener.configure(s.proxy, x, y, width, height)
 		}
 		1 {
@@ -1249,7 +1249,7 @@ pub fn (proxy &XdgPopup) destroy() ! {
 }
 
 // This request makes the created popup take an explicit grab.
-pub fn (proxy &XdgPopup) grab(seat wayland.WlSeat, serial u32) ! {
+pub fn (proxy &XdgPopup) grab(seat wl.WlSeat, serial u32) ! {
 	proxy.conn.request(proxy.id, 1, [
 		wayland.ArgValue(wayland.ObjectRef{ id: seat.id }),
 		wayland.ArgValue(serial),
