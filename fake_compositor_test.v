@@ -655,3 +655,254 @@ fn test_xdg_toplevel_window_flow() {
 	assert int(get_u32_at(destroyed[0], 4) & 0xffff) == 0 // wl_buffer.destroy
 	assert int(get_u32_at(destroyed[1], 4) & 0xffff) == 1 // wl_shm_pool.destroy
 }
+
+// --- keyboard input ----------------------------------------------------------
+//
+// The input test follows the seat part of `examples/window`: the seat reports
+// its capabilities, the keyboard is created from them, the keymap arrives as a
+// file descriptor and Escape closes the window.
+
+// InputState is what the input listeners report to the test.
+struct InputState {
+mut:
+	keyboard_created bool
+	keyboard_id      u32
+	keymap           string
+	keymap_fd        int = -1
+	focused          bool
+	closed           bool
+	last_key         string
+}
+
+struct InputSeatListener {
+mut:
+	state &InputState
+}
+
+fn (mut listener InputSeatListener) capabilities(seat wayland.WlSeat, capabilities u32) {
+	if listener.state.keyboard_created || capabilities & wayland.wl_seat_capability_keyboard == 0 {
+		return
+	}
+	keyboard := seat.get_keyboard() or { return }
+	listener.state.keyboard_id = keyboard.id
+	listener.state.keyboard_created = true
+	keyboard.set_listener(&InputKeyboardListener{
+		state: listener.state
+	})!
+}
+
+fn (mut listener InputSeatListener) name(_ wayland.WlSeat, _name string) {
+}
+
+struct InputKeyboardListener {
+mut:
+	state &InputState
+}
+
+fn (mut listener InputKeyboardListener) keymap(_ wayland.WlKeyboard, format u32, fd int, size u32) {
+	listener.state.keymap_fd = fd
+	listener.state.keymap = read_keymap(format, fd, size) or { '' }
+}
+
+fn (mut listener InputKeyboardListener) enter(_ wayland.WlKeyboard, _serial u32, _surface wayland.WlSurface, _keys []u8) {
+	listener.state.focused = true
+}
+
+fn (mut listener InputKeyboardListener) leave(_ wayland.WlKeyboard, _serial u32, _surface wayland.WlSurface) {
+	listener.state.focused = false
+}
+
+fn (mut listener InputKeyboardListener) key(_ wayland.WlKeyboard, _serial u32, _time u32, key u32, state u32) {
+	if state != wayland.wl_keyboard_key_state_pressed {
+		return
+	}
+	listener.state.last_key = key_name(key) or { '' }
+	if key == key_escape {
+		listener.state.closed = true
+	}
+}
+
+fn (mut listener InputKeyboardListener) modifiers(_ wayland.WlKeyboard, _serial u32, _mods_depressed u32, _mods_latched u32, _mods_locked u32, _group u32) {
+}
+
+fn (mut listener InputKeyboardListener) repeat_info(_ wayland.WlKeyboard, _rate i32, _delay i32) {
+}
+
+fn test_read_keymap_validation() {
+	// An event without a descriptor has no keymap to read.
+	if _ := read_keymap(wayland.wl_keyboard_keymap_format_xkb_v1, -1, 64) {
+		assert false, 'a missing keymap descriptor must be rejected'
+	} else {
+		assert err.msg().contains('no descriptor')
+	}
+	// A compositor with no keymap sends the no-keymap format: the descriptor is
+	// closed and the answer is empty, not an error.
+	empty := os.open_file('/dev/null', 'r')!
+	assert read_keymap(wayland.wl_keyboard_keymap_format_no_keymap, empty.fd, 0) or {
+		assert false, 'the no-keymap format must not fail'
+		''
+	} == ''
+	_, closed := os.fd_read(empty.fd, 1)
+	assert closed < 0 // read_keymap owns and closes the descriptor
+
+	// A format that is neither no-keymap nor xkb is not readable.
+	unknown := os.open_file('/dev/null', 'r')!
+	if _ := read_keymap(99, unknown.fd, 8) {
+		assert false, 'an unknown keymap format must be rejected'
+	} else {
+		assert err.msg().contains('unsupported keyboard keymap format 99')
+	}
+	_, closed_unknown := os.fd_read(unknown.fd, 1)
+	assert closed_unknown < 0
+
+	// The size is the compositor's number, and it is not allowed to become a
+	// large allocation.
+	absurd := os.open_file('/dev/null', 'r')!
+	if _ := read_keymap(wayland.wl_keyboard_keymap_format_xkb_v1, absurd.fd, 64 * 1024 * 1024) {
+		assert false, 'an absurd keymap size must be rejected'
+	} else {
+		assert err.msg().contains('more than')
+	}
+	_, closed_absurd := os.fd_read(absurd.fd, 1)
+	assert closed_absurd < 0
+
+	// A keymap descriptor shares its file offset with the compositor and with
+	// every other client that received the same keymap, so it can arrive with
+	// the offset already at the end of the file: the text must still come back
+	// whole, as it does for the mapping libwayland clients take.
+	path := os.join_path(os.temp_dir(), 'wayland-keymap-offset-${os.getpid()}')
+	text := 'xkb_keymap { xkb_keycodes "test" { }; };'
+	os.write_file(path, text + '\x00')!
+	file := os.open_file(path, 'r')!
+	os.rm(path) or {}
+	_, consumed := os.fd_read(file.fd, text.len + 1)
+	assert consumed == text.len + 1
+	assert read_keymap(wayland.wl_keyboard_keymap_format_xkb_v1, file.fd, u32(text.len + 1))! == text
+	file.close()
+}
+
+fn test_keyboard_input_flow() {
+	mut client, server_fd := new_pair()!
+	defer {
+		client.close()
+		os.fd_close(server_fd)
+	}
+	// A compositor with a seat and a compositor global.
+	seat_global, _ := event_bytes(u32(2), 0, [ArgValue(u32(1)), ArgValue('wl_seat'), ArgValue(u32(9))])
+	compositor_global, _ := event_bytes(u32(2), 0, [
+		ArgValue(u32(2)),
+		ArgValue('wl_compositor'),
+		ArgValue(u32(6)),
+	])
+	done, _ := event_bytes(u32(3), 0, [ArgValue(u32(1))])
+	server_write(server_fd, join_bytes([seat_global, compositor_global, done]), [])!
+
+	globals := client.globals()!
+	seat := wayland.bind_wl_seat(client, globals.find('wl_seat')!)!
+	compositor := wayland.bind_wl_compositor(client, globals.find('wl_compositor')!)!
+	mut state := InputState{}
+	mut seat_listener := InputSeatListener{
+		state: &state
+	}
+	seat.set_listener(&seat_listener)!
+	surface := compositor.create_surface()!
+	client.flush()!
+	server_read_available(server_fd)!
+	assert !state.keyboard_created
+
+	// The seat reports its capabilities, and the client answers with
+	// wl_seat.get_keyboard.
+	capabilities, _ := event_bytes(seat.id, 0, [
+		ArgValue(wayland.wl_seat_capability_pointer | wayland.wl_seat_capability_keyboard),
+	])
+	server_write(server_fd, capabilities, [])!
+	assert client.dispatch_pending()! == 1
+	assert state.keyboard_created
+	// The request was queued while dispatching, after dispatch flushed.
+	client.flush()!
+	get_keyboard := server_read_available(server_fd)!
+	assert get_keyboard.data.len == 12
+	assert get_u32_at(get_keyboard.data, 0) == seat.id
+	assert int(get_u32_at(get_keyboard.data, 4) & 0xffff) == 1 // wl_seat.get_keyboard
+	assert get_u32_at(get_keyboard.data, 8) == state.keyboard_id
+
+	// The keymap travels as a file descriptor and a size, and the descriptor
+	// belongs to the client.
+	path := os.join_path(os.temp_dir(), 'wayland-keymap-${os.getpid()}')
+	keymap_text := 'xkb_keymap {\n  xkb_keycodes "test" { <ESC> = 9; };\n}\n'
+	os.write_file(path, keymap_text + '\x00')!
+	keymap_file := os.open_file(path, 'r')!
+	os.rm(path) or {}
+	// The compositor wrote the file through the descriptor it sends, so the
+	// offset it shares with the client is already at the end when the event
+	// arrives; the reader has to rewind before it can see anything.
+	_, written := os.fd_read(keymap_file.fd, keymap_text.len + 1)
+	assert written == keymap_text.len + 1
+	keymap_event, fds := event_bytes(state.keyboard_id, 0, [
+		ArgValue(wayland.wl_keyboard_keymap_format_xkb_v1),
+		ArgValue(Fd{
+			fd: keymap_file.fd
+		}),
+		ArgValue(u32(keymap_text.len + 1)),
+	])
+	server_write(server_fd, keymap_event, fds)!
+	assert client.dispatch_pending()! == 1
+	assert state.keymap == keymap_text // the helper drops the terminating NUL
+	// read_keymap closes the descriptor it was given.
+	closed_read, n := os.fd_read(state.keymap_fd, 4)
+	assert n < 0
+	assert closed_read == ''
+	keymap_file.close()
+
+	// Focus, a key that is not Escape, and the Escape release: none of them
+	// closes the window.
+	enter, _ := event_bytes(state.keyboard_id, 1, [
+		ArgValue(u32(5)),
+		ArgValue(ObjectRef{
+			id: surface.id
+		}),
+		ArgValue([]u8{}),
+	])
+	space, _ := event_bytes(state.keyboard_id, 3, [
+		ArgValue(u32(6)),
+		ArgValue(u32(0)),
+		ArgValue(key_space),
+		ArgValue(wayland.wl_keyboard_key_state_pressed),
+	])
+	escape_up, _ := event_bytes(state.keyboard_id, 3, [
+		ArgValue(u32(7)),
+		ArgValue(u32(0)),
+		ArgValue(key_escape),
+		ArgValue(wayland.wl_keyboard_key_state_released),
+	])
+	server_write(server_fd, join_bytes([enter, space, escape_up]), [])!
+	assert client.dispatch_pending()! == 3
+	assert state.focused
+	assert state.last_key == 'Space'
+	assert !state.closed
+
+	// The Escape press closes the window, and losing focus is reported too.
+	escape_down, _ := event_bytes(state.keyboard_id, 3, [
+		ArgValue(u32(8)),
+		ArgValue(u32(0)),
+		ArgValue(key_escape),
+		ArgValue(wayland.wl_keyboard_key_state_pressed),
+	])
+	leave, _ := event_bytes(state.keyboard_id, 2, [
+		ArgValue(u32(9)),
+		ArgValue(ObjectRef{
+			id: surface.id
+		}),
+	])
+	server_write(server_fd, join_bytes([escape_down, leave]), [])!
+	assert client.dispatch_pending()! == 2
+	assert state.closed
+	assert !state.focused
+
+	// Only the documented key codes have names.
+	assert key_name(key_enter)? == 'Enter'
+	assert key_name(key_escape)? == 'Escape'
+	if _ := key_name(4321) {
+		assert false, 'an undocumented key code has no name'
+	}
+}

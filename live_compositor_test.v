@@ -194,3 +194,99 @@ fn test_live_shared_memory_pool() {
 	pool.destroy()!
 	conn.roundtrip()!
 }
+
+// LiveInputState is what the keyboard listeners of the live test report.
+struct LiveInputState {
+mut:
+	keyboard_created bool
+	keymap           string
+	keymap_size      u32
+}
+
+struct LiveInputSeatListener {
+mut:
+	state &LiveInputState
+}
+
+fn (mut listener LiveInputSeatListener) capabilities(seat wayland.WlSeat, capabilities u32) {
+	if listener.state.keyboard_created || capabilities & wayland.wl_seat_capability_keyboard == 0 {
+		return
+	}
+	keyboard := seat.get_keyboard() or { return }
+	listener.state.keyboard_created = true
+	keyboard.set_listener(&LiveInputKeyboardListener{
+		state: listener.state
+	})!
+}
+
+fn (mut listener LiveInputSeatListener) name(_ wayland.WlSeat, _name string) {
+}
+
+struct LiveInputKeyboardListener {
+mut:
+	state &LiveInputState
+}
+
+fn (mut listener LiveInputKeyboardListener) keymap(_ wayland.WlKeyboard, format u32, fd int, size u32) {
+	listener.state.keymap_size = size
+	listener.state.keymap = read_keymap(format, fd, size) or { '' }
+}
+
+fn (mut listener LiveInputKeyboardListener) enter(_ wayland.WlKeyboard, _serial u32, _surface wayland.WlSurface, _keys []u8) {
+}
+
+fn (mut listener LiveInputKeyboardListener) leave(_ wayland.WlKeyboard, _serial u32, _surface wayland.WlSurface) {
+}
+
+fn (mut listener LiveInputKeyboardListener) key(_ wayland.WlKeyboard, _serial u32, _time u32, _key u32, _state u32) {
+}
+
+fn (mut listener LiveInputKeyboardListener) modifiers(_ wayland.WlKeyboard, _serial u32, _mods_depressed u32, _mods_latched u32, _mods_locked u32, _group u32) {
+}
+
+fn (mut listener LiveInputKeyboardListener) repeat_info(_ wayland.WlKeyboard, _rate i32, _delay i32) {
+}
+
+fn test_live_keyboard_keymap() {
+	if !live_session_available() {
+		eprintln('wayland: skipping live keyboard test, no Wayland session')
+		return
+	}
+	mut conn := connect()!
+	globals := conn.globals()!
+	defer {
+		conn.close()
+	}
+	seat_global := globals.find('wl_seat') or {
+		eprintln('wayland: skipping live keyboard test, no wl_seat global')
+		return
+	}
+	seat := wayland.bind_wl_seat(conn, seat_global)!
+	mut state := LiveInputState{}
+	mut seat_listener := LiveInputSeatListener{
+		state: &state
+	}
+	seat.set_listener(&seat_listener)!
+	// The seat reports its capabilities when it is bound, and a keyboard sends
+	// its keymap as soon as it is created.
+	mut tries := 0
+	for (!state.keyboard_created || state.keymap == '') && tries < 20 {
+		conn.roundtrip()!
+		time.sleep(5 * time.millisecond)
+		tries++
+	}
+	if !state.keyboard_created {
+		eprintln('wayland: skipping live keyboard test, the seat has no keyboard')
+		return
+	}
+	// The keymap is an xkb keymap: this is what makes the raw key codes the
+	// keyboard sends meaningful to an application. The size the event reported
+	// is the whole file, NUL included, so a keymap that arrived truncated (the
+	// descriptor is shared, so its offset can already be at the end) would show
+	// up here.
+	assert state.keymap != ''
+	assert state.keymap.len == int(state.keymap_size) - 1
+	assert state.keymap.contains('xkb_keymap')
+	assert state.keymap.contains('xkb_symbols') // the section these keymaps end with
+	assert key_name(key_escape)? == 'Escape'
+}

@@ -6,7 +6,7 @@ import wayland.protocols.wayland as wl
 import wayland.protocols.xdg_shell
 
 // Opens a real xdg-shell toplevel window, animates it and exits when the
-// window is closed.
+// window is closed or Escape is pressed.
 //
 //	v run examples/window
 //	v run examples/window -- --frames 60   # present 60 frames, then exit
@@ -17,6 +17,11 @@ import wayland.protocols.xdg_shell
 // configure event; from then on every frame is driven by a wl_callback frame
 // callback, and the shared memory buffer is only redrawn once the compositor
 // released it.
+//
+// Input comes through wl_seat: the seat reports its capabilities, and the
+// keyboard it creates sends raw evdev key codes. Escape (key code 1) closes the
+// window; the keymap the compositor sends is read and thrown away, because raw
+// codes are enough for a shortcut like this one.
 
 const default_width = 800
 
@@ -42,6 +47,8 @@ mut:
 	frames int
 	// closed is set when the compositor says the window should close.
 	closed bool
+	// keyboard_created is set once the seat gave us a keyboard.
+	keyboard_created bool
 }
 
 // WmBaseListener answers xdg_wm_base pings: a client that stays silent may be
@@ -100,6 +107,69 @@ mut:
 
 fn (mut listener FrameListener) done(_ wl.WlCallback, _callback_data u32) {
 	listener.state.redraw = true
+}
+
+// SeatListener creates the keyboard as soon as the seat reports that it has
+// one. The capabilities event can be sent again when devices come and go, so
+// the keyboard is only created once.
+struct SeatListener {
+mut:
+	state &State
+}
+
+fn (mut listener SeatListener) capabilities(seat wl.WlSeat, capabilities u32) {
+	if listener.state.keyboard_created || capabilities & wl.wl_seat_capability_keyboard == 0 {
+		return
+	}
+	keyboard := seat.get_keyboard() or { return }
+	// The connection owns the sink that calls the listener, so the listener
+	// itself is allocated on the heap and lives as long as the connection.
+	keyboard.set_listener(&KeyboardListener{
+		state: listener.state
+	}) or { return }
+	listener.state.keyboard_created = true
+	println('input: keyboard ready')
+}
+
+fn (mut listener SeatListener) name(_ wl.WlSeat, _name string) {
+}
+
+// KeyboardListener receives keyboard events. The key codes are raw evdev codes:
+// `wayland.key_name()` names the common ones, and `wayland.read_keymap()` hands
+// back the xkb keymap for the rest.
+struct KeyboardListener {
+mut:
+	state &State
+}
+
+fn (mut listener KeyboardListener) keymap(_ wl.WlKeyboard, format u32, fd int, size u32) {
+	keymap := wayland.read_keymap(format, fd, size) or { return }
+	println('input: keymap ${keymap.len} bytes')
+}
+
+fn (mut listener KeyboardListener) enter(_ wl.WlKeyboard, _serial u32, _surface wl.WlSurface, _keys []u8) {
+	println('input: focus in')
+}
+
+fn (mut listener KeyboardListener) leave(_ wl.WlKeyboard, _serial u32, _surface wl.WlSurface) {
+	println('input: focus out')
+}
+
+fn (mut listener KeyboardListener) key(_ wl.WlKeyboard, _serial u32, _time u32, key u32, state u32) {
+	if state != wl.wl_keyboard_key_state_pressed {
+		return
+	}
+	name := wayland.key_name(key) or { 'code ${key}' }
+	println('input: ${name}')
+	if key == wayland.key_escape {
+		listener.state.closed = true
+	}
+}
+
+fn (mut listener KeyboardListener) modifiers(_ wl.WlKeyboard, _serial u32, _mods_depressed u32, _mods_latched u32, _mods_locked u32, _group u32) {
+}
+
+fn (mut listener KeyboardListener) repeat_info(_ wl.WlKeyboard, _rate i32, _delay i32) {
 }
 
 // paint draws one frame: a gradient background that drifts with the frame
@@ -220,10 +290,22 @@ fn main() {
 		state: &state
 	}
 
+	// The seat is optional: without one the window still works, it just cannot
+	// be closed with the keyboard.
+	mut seat_listener := SeatListener{
+		state: &state
+	}
+	if seat_global := globals.find('wl_seat') {
+		seat := wl.bind_wl_seat(conn, seat_global)!
+		seat.set_listener(&seat_listener)!
+	} else {
+		println('input: the compositor has no seat, Escape will not work')
+	}
+
 	surface.commit()!
 
 	mut buffer := wayland.ShmBuffer.new(shm, default_width, default_height, wl.wl_shm_format_xrgb8888)!
-	println('window: ${buffer.width}x${buffer.height}, close it to quit')
+	println('window: ${buffer.width}x${buffer.height}, close it or press Escape to quit')
 
 	for !state.closed {
 		// Deliver one event, which also flushes the requests queued below.

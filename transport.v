@@ -65,6 +65,8 @@ fn C.sendmsg(fd int, msg voidptr, flags int) int
 
 fn C.recvmsg(fd int, msg voidptr, flags int) int
 
+fn C.lseek(fd int, offset i64, whence int) i64
+
 const unix_path_max = 108
 
 // max_fds_per_recv bounds how many descriptors a single socket message may
@@ -204,6 +206,17 @@ fn receive_bytes(fd int, max int, nonblocking bool) !Received {
 		data: buf[..n].clone()
 		fds:  fds
 	}
+}
+
+// rewind_fd moves a file descriptor back to its first byte. A descriptor sent
+// over the socket shares its file offset with the sender and with every other
+// receiver: the compositor writes a keymap into a file and hands the same open
+// file description to all its clients, so whoever reads it first leaves the
+// offset at the end for everyone else. Rewinding before reading is what a
+// mapping-based client does not need, but a reading one does. Failing is fine:
+// pipes and other uncseekable files simply have no offset to rewind.
+fn rewind_fd(fd int) {
+	C.lseek(fd, 0, 0)
 }
 
 // close_fds closes every descriptor in the slice, ignoring errors.

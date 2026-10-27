@@ -3,7 +3,7 @@
 A Wayland client library for [V](https://vlang.io), written in pure V.
 
 * **No libwayland.** The wire protocol, the object id table, version negotiation and event dispatch are implemented here, in V.
-* **No C glue** beyond the socket calls that carry file descriptors. The only file that declares C functions is `transport.v`, and everything it exposes is wrapped in safe helpers; shared memory is mapped through the standard library's `os.mmap`.
+* **No C glue** beyond the descriptor calls V does not expose. The only file that declares C functions is `transport.v` — `sendmsg`/`recvmsg` to pass descriptors, `lseek` to rewind one — and everything it exposes is wrapped in safe helpers; shared memory is mapped through the standard library's `os.mmap`.
 * **No `unsafe` in the API you use.** Marshalling, listening, id bookkeeping and file descriptor passing are all handled by the library.
 * **Generated from the protocol XML.** Interfaces, requests, events, enums, listeners and version negotiation are generated from the official XML files, so adding a protocol is one command. Generated code is `v fmt` clean.
 
@@ -67,14 +67,17 @@ What works today:
 * shared memory buffers: `ShmBuffer` bundles the memory file, the mapping, the
   pool, the buffer and the compositor release tracking, so drawing is writing
   bytes into a slice
-* a real window: `examples/window` opens an xdg-shell toplevel, follows its
-  configure events and animates it from a frame loop until it is closed
+* a real window: `examples/window` opens an xdg-shell toplevel, follows its configure events and animates it from a frame loop until it is closed or Escape is pressed
+* keyboard input: seat capabilities, `wl_keyboard` key events as raw evdev key codes with names for the common ones, and `read_keymap()` for the xkb keymap the compositor sends as a file descriptor
 
 What is not here yet:
 
 * the server side (implementing a compositor), and protocol *helpers* above the
-  generated layer: a reusable window type, and the input side (keyboard,
-  pointer, clipboard, cursors)
+  generated layer: a reusable window type, and the rest of the input side
+  (pointer, touch, clipboard, cursors)
+* text: turning a key code into a character needs xkb state, which lives in
+  `libxkbcommon`. `read_keymap()` hands over the keymap text; interpreting it is
+  a different library's job, and doing it in V would be a project of its own
 * an event loop: the application owns its main loop. Use `dispatch_pending()`
   with `Connection.fd` in your own poll/select, or `roundtrip()` for a blocking
   client
@@ -86,7 +89,7 @@ What is not here yet:
 ```sh
 v run examples/list_globals        # every global the compositor advertises
 v run examples/seat                # bind a seat and print its events
-v run examples/window              # a real xdg-shell window, close it to quit
+v run examples/window              # a real xdg-shell window, close it or press Escape
 v run examples/window -- --frames 60   # present 60 frames, then exit
 v test .                           # unit, generator and end to end tests
 ```
@@ -94,7 +97,10 @@ v test .                           # unit, generator and end to end tests
 `fake_compositor_test.v` implements a compositor in the test file and drives a
 whole window through it: configure, ack, a shared memory buffer built from the
 descriptor the fake compositor receives, the frame callback, the close request
-and the teardown. The tests in `live_compositor_test.v` talk to the running
+and the teardown. It also drives the keyboard: capabilities, the keymap
+arriving as a descriptor whose offset is already at the end (the way a
+compositor that wrote through the same descriptor leaves it), focus, key
+presses and releases. The tests in `live_compositor_test.v` talk to the running
 compositor and are skipped when there is no Wayland session; they never attach a
 buffer, so they do not put a window on the screen.
 
@@ -118,6 +124,42 @@ surface.commit()!
 
 The helper accepts the 32 bit `wl_shm` formats, which is what every compositor
 supports. `examples/window` is the full version of the loop.
+
+## Keyboard input
+
+`wl_seat` reports what it has — keyboard, pointer, touch — and the keyboard it
+hands out sends **raw Linux evdev key codes**. Those name physical keys, not
+letters: key 1 is Escape whatever the layout is. `wayland.key_name()` names the
+common ones, and `wayland.read_keymap()` reads the xkb keymap the compositor
+sends as a file descriptor, which is what mapping a code to a keysym needs:
+
+```v
+fn (mut listener KeyboardListener) key(_proxy wl.WlKeyboard, _serial u32, _time u32, key u32, state u32) {
+	if state != wl.wl_keyboard_key_state_pressed {
+		return
+	}
+	if key == wayland.key_escape {
+		listener.close_requested = true
+	}
+}
+```
+
+`read_keymap()` takes the `format`, `fd` and `size` of the keymap event, owns
+the descriptor (it closes it) and returns the text without its terminating NUL.
+Two things about that descriptor are worth knowing, because libwayland hides
+both by mapping the file instead of reading it:
+
+* it shares **one file offset** with the compositor and with every other client
+  that received the same keymap, so a plain `read()` can start at the end and
+  return nothing at all. The helper rewinds it first, which is also why it keeps
+  working when the compositor sends the same description to client after client.
+* the file is usually already unlinked when the client sees it: the compositor
+  keeps it alive through the descriptors it sent, so there is no path left to
+  reopen (`/proc/self/fd/...` fails with `EACCES`).
+
+`examples/window` puts this together: it binds the seat the compositor
+advertises, creates the keyboard from the seat's capabilities, reads the keymap
+and closes when Escape is pressed.
 
 ## Code generation
 
@@ -219,6 +261,7 @@ instead of failing, so a partial protocol set keeps working.
 * [`registry.v`](registry.v) — globals: discovery and binding
 * [`wire.v`](wire.v) and [`args.v`](args.v) — the wire format and argument values
 * [`shm.v`](shm.v) — shared memory buffers for drawing
+* [`input.v`](input.v) — key codes, names and reading the keymap
 * [`gen/emit.v`](gen/emit.v) — what a generated module looks like, and why
 * [`examples/seat`](examples/seat) — listeners end to end
 * [`examples/window`](examples/window) — a real window: roles, configure, frame loop
