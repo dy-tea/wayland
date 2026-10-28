@@ -1753,8 +1753,8 @@ fn (mut s WlDataDeviceSink) on_event(msg &wayland.Message) !bool {
 			serial := msg.arg_u32(0)!
 			surface_id := msg.arg_id(1)!
 			surface := wl_surface_proxy(s.proxy.conn, surface_id)
-			x := msg.arg_fixed(2)!
-			y := msg.arg_fixed(3)!
+			x := msg.arg_fixed(2)!.f64()
+			y := msg.arg_fixed(3)!.f64()
 			id_id := msg.arg_id(4)!
 			mut id := ?WlDataOffer(none)
 			if id_id != 0 {
@@ -1767,8 +1767,8 @@ fn (mut s WlDataDeviceSink) on_event(msg &wayland.Message) !bool {
 		}
 		3 {
 			time := msg.arg_u32(0)!
-			x := msg.arg_fixed(1)!
-			y := msg.arg_fixed(2)!
+			x := msg.arg_fixed(1)!.f64()
+			y := msg.arg_fixed(2)!.f64()
 			s.listener.motion(s.proxy, time, x, y)
 		}
 		4 {
@@ -3326,8 +3326,8 @@ fn (mut s WlPointerSink) on_event(msg &wayland.Message) !bool {
 			serial := msg.arg_u32(0)!
 			surface_id := msg.arg_id(1)!
 			surface := wl_surface_proxy(s.proxy.conn, surface_id)
-			surface_x := msg.arg_fixed(2)!
-			surface_y := msg.arg_fixed(3)!
+			surface_x := msg.arg_fixed(2)!.f64()
+			surface_y := msg.arg_fixed(3)!.f64()
 			s.listener.enter(s.proxy, serial, surface, surface_x, surface_y)
 		}
 		1 {
@@ -3338,8 +3338,8 @@ fn (mut s WlPointerSink) on_event(msg &wayland.Message) !bool {
 		}
 		2 {
 			time := msg.arg_u32(0)!
-			surface_x := msg.arg_fixed(1)!
-			surface_y := msg.arg_fixed(2)!
+			surface_x := msg.arg_fixed(1)!.f64()
+			surface_y := msg.arg_fixed(2)!.f64()
 			s.listener.motion(s.proxy, time, surface_x, surface_y)
 		}
 		3 {
@@ -3352,7 +3352,7 @@ fn (mut s WlPointerSink) on_event(msg &wayland.Message) !bool {
 		4 {
 			time := msg.arg_u32(0)!
 			axis := msg.arg_u32(1)!
-			value_ := msg.arg_fixed(2)!
+			value_ := msg.arg_fixed(2)!.f64()
 			s.listener.axis(s.proxy, time, axis, value_)
 		}
 		5 {
@@ -3383,8 +3383,8 @@ fn (mut s WlPointerSink) on_event(msg &wayland.Message) !bool {
 			s.listener.axis_relative_direction(s.proxy, axis, direction)
 		}
 		11 {
-			surface_x := msg.arg_fixed(0)!
-			surface_y := msg.arg_fixed(1)!
+			surface_x := msg.arg_fixed(0)!.f64()
+			surface_y := msg.arg_fixed(1)!.f64()
 			s.listener.warp(s.proxy, surface_x, surface_y)
 		}
 		else {
@@ -3924,8 +3924,8 @@ fn (mut s WlTouchSink) on_event(msg &wayland.Message) !bool {
 			surface_id := msg.arg_id(2)!
 			surface := wl_surface_proxy(s.proxy.conn, surface_id)
 			id := msg.arg_int(3)!
-			x := msg.arg_fixed(4)!
-			y := msg.arg_fixed(5)!
+			x := msg.arg_fixed(4)!.f64()
+			y := msg.arg_fixed(5)!.f64()
 			s.listener.down(s.proxy, serial, time, surface, id, x, y)
 		}
 		1 {
@@ -3937,8 +3937,8 @@ fn (mut s WlTouchSink) on_event(msg &wayland.Message) !bool {
 		2 {
 			time := msg.arg_u32(0)!
 			id := msg.arg_int(1)!
-			x := msg.arg_fixed(2)!
-			y := msg.arg_fixed(3)!
+			x := msg.arg_fixed(2)!.f64()
+			y := msg.arg_fixed(3)!.f64()
 			s.listener.motion(s.proxy, time, id, x, y)
 		}
 		3 {
@@ -3949,13 +3949,13 @@ fn (mut s WlTouchSink) on_event(msg &wayland.Message) !bool {
 		}
 		5 {
 			id := msg.arg_int(0)!
-			major := msg.arg_fixed(1)!
-			minor := msg.arg_fixed(2)!
+			major := msg.arg_fixed(1)!.f64()
+			minor := msg.arg_fixed(2)!.f64()
 			s.listener.shape(s.proxy, id, major, minor)
 		}
 		6 {
 			id := msg.arg_int(0)!
-			orientation := msg.arg_fixed(1)!
+			orientation := msg.arg_fixed(1)!.f64()
 			s.listener.orientation(s.proxy, id, orientation)
 		}
 		else {

@@ -217,6 +217,22 @@ fn test_emit_wayland_module() {
 	}
 }
 
+fn test_emit_fixed_point_arguments() {
+	// Fixed point arguments need the 24.8 conversion on both sides, and the
+	// emitted code has to ask for it: V widens a `Fixed` to the f64 of an event
+	// method without complaining, and it refuses an f64 where a request wants a
+	// `Fixed`, so a missing conversion is either wrong at run time or does not
+	// compile at all.
+	wayland := load_protocol(protocol_path('wayland.xml'))!
+	source := emit_module(&wayland, EmitOptions{})!
+	assert source.contains('surface_x := msg.arg_fixed(0)!.f64()') // wl_pointer.warp
+	assert source.contains('value_ := msg.arg_fixed(2)!.f64()') // wl_pointer.axis
+	viewporter := load_protocol(protocol_path('viewporter.xml'))!
+	viewport_source := emit_module(&viewporter, EmitOptions{})!
+	assert viewport_source.contains('wayland.ArgValue(wayland.Fixed.new(x))')
+	assert viewport_source.contains('wayland.ArgValue(wayland.Fixed.new(height))')
+}
+
 fn test_emit_uses_externs_for_other_protocols() {
 	wayland := load_protocol(protocol_path('wayland.xml'))!
 	xdg := load_protocol(protocol_path('xdg-shell.xml'))!

@@ -171,8 +171,9 @@ pub fn (proxy &WpViewport) destroy() ! {
 
 // Set the source rectangle of the associated wl_surface.
 pub fn (proxy &WpViewport) set_source(x f64, y f64, width f64, height f64) ! {
-	proxy.conn.request(proxy.id, 1, [wayland.ArgValue(x), wayland.ArgValue(y), wayland.ArgValue(width),
-		wayland.ArgValue(height)])!
+	proxy.conn.request(proxy.id, 1, [wayland.ArgValue(wayland.Fixed.new(x)),
+		wayland.ArgValue(wayland.Fixed.new(y)), wayland.ArgValue(wayland.Fixed.new(width)),
+		wayland.ArgValue(wayland.Fixed.new(height))])!
 }
 
 // Set the destination size of the associated wl_surface.

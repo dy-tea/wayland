@@ -1,6 +1,7 @@
 module wayland
 
 import os
+import wayland.protocols.viewporter
 import wayland.protocols.wayland
 import wayland.protocols.xdg_shell
 
@@ -905,4 +906,258 @@ fn test_keyboard_input_flow() {
 	if _ := key_name(4321) {
 		assert false, 'an undocumented key code has no name'
 	}
+}
+
+// --- pointer input -----------------------------------------------------------
+//
+// The pointer test drives the `Pointer` helper the way `examples/window` does:
+// the seat hands the pointer out, the fake compositor sends the events of a
+// frame, and both the state and the requests that come back are checked. The
+// positions travel as 24.8 fixed point, which is where a conversion that is not
+// applied shows up as a position scaled by 256.
+
+fn test_pointer_input_flow() {
+	assert Fixed.new(120.5) == 30848 // 120.5 * 256: the wire has 24.8 fixed point
+	mut client, server_fd := new_pair()!
+	defer {
+		client.close()
+		os.fd_close(server_fd)
+	}
+	// A compositor with a seat, a compositor and a shm global.
+	seat_global, _ := event_bytes(u32(2), 0, [ArgValue(u32(1)), ArgValue('wl_seat'), ArgValue(u32(9))])
+	compositor_global, _ := event_bytes(u32(2), 0, [
+		ArgValue(u32(2)),
+		ArgValue('wl_compositor'),
+		ArgValue(u32(6)),
+	])
+	shm_global, _ := event_bytes(u32(2), 0, [ArgValue(u32(3)), ArgValue('wl_shm'), ArgValue(u32(1))])
+	done, _ := event_bytes(u32(3), 0, [ArgValue(u32(1))])
+	server_write(server_fd, join_bytes([seat_global, compositor_global, shm_global, done]), [])!
+
+	globals := client.globals()!
+	seat := wayland.bind_wl_seat(client, globals.find('wl_seat')!)!
+	compositor := wayland.bind_wl_compositor(client, globals.find('wl_compositor')!)!
+	shm := wayland.bind_wl_shm(client, globals.find('wl_shm')!)!
+	surface := compositor.create_surface()!
+	client.flush()!
+	server_read_available(server_fd)!
+
+	// Creating a pointer asks the seat for one and makes the surface its cursor
+	// is drawn on.
+	mut pointer := wayland.Pointer.new(compositor, seat)!
+	client.flush()!
+	created := split_messages(server_read_available(server_fd)!.data)
+	assert created.len == 2
+	assert get_u32_at(created[0], 0) == seat.id
+	assert int(get_u32_at(created[0], 4) & 0xffff) == 0 // wl_seat.get_pointer
+	pointer_id := get_u32_at(created[0], 8)
+	assert get_u32_at(created[1], 0) == compositor.id
+	assert int(get_u32_at(created[1], 4) & 0xffff) == 0 // wl_compositor.create_surface
+	cursor_surface_id := get_u32_at(created[1], 8)
+
+	// The pointer enters at a fractional position and the helper rounds it to
+	// the pixel it exposes.
+	enter, _ := event_bytes(pointer_id, 0, [
+		ArgValue(u32(11)),
+		ArgValue(ObjectRef{
+			id: surface.id
+		}),
+		ArgValue(Fixed.new(120.5)),
+		ArgValue(Fixed.new(49.5)),
+	])
+	server_write(server_fd, enter, [])!
+	assert client.dispatch_pending()! == 1
+	assert pointer.inside
+	assert pointer.serial == 11
+	assert pointer.x == 121
+	assert pointer.y == 50
+
+	// Motion: 12.75 to the right and 5.5 up, rounded to whole pixels, and taken
+	// exactly once.
+	motion, _ := event_bytes(pointer_id, 2, [
+		ArgValue(u32(5)),
+		ArgValue(Fixed.new(133.25)),
+		ArgValue(Fixed.new(44.0)),
+	])
+	server_write(server_fd, motion, [])!
+	assert client.dispatch_pending()! == 1
+	assert pointer.x == 133
+	assert pointer.y == 44
+	if delta := pointer.take_motion() {
+		assert delta.dx == 13
+		assert delta.dy == -6
+	} else {
+		assert false, 'a motion event must be reported'
+	}
+	if _ := pointer.take_motion() {
+		assert false, 'the motion was already taken'
+	}
+
+	// One frame of scrolling: the value, the source, the high resolution steps
+	// and the stop that says the gesture is over, which is what makes a frame a
+	// unit rather than a pile of events. The opcodes follow the protocol: axis
+	// is 4, frame 5, axis_source 6, axis_stop 7 and axis_value120 9.
+	axis, _ := event_bytes(pointer_id, 4, [
+		ArgValue(u32(7)),
+		ArgValue(wayland.wl_pointer_axis_vertical_scroll),
+		ArgValue(Fixed.new(-15.5)),
+	])
+	source, _ := event_bytes(pointer_id, 6, [ArgValue(wayland.wl_pointer_axis_source_wheel)])
+	steps, _ := event_bytes(pointer_id, 9, [
+		ArgValue(wayland.wl_pointer_axis_vertical_scroll),
+		ArgValue(i32(-120)),
+	])
+	stop, _ := event_bytes(pointer_id, 7, [
+		ArgValue(u32(9)),
+		ArgValue(wayland.wl_pointer_axis_vertical_scroll),
+	])
+	frame, _ := event_bytes(pointer_id, 5, [])
+	server_write(server_fd, join_bytes([axis, source, steps, stop, frame]), [])!
+	assert client.dispatch_pending()! == 5
+	assert pointer.take_frame()
+	assert !pointer.take_frame()
+	if scrolled := pointer.take_scroll() {
+		assert scrolled.y == -15.5
+		assert scrolled.x == 0
+		assert scrolled.steps_y == -1 // 120 of the value120 units are one step
+		assert scrolled.source == wayland.wl_pointer_axis_source_wheel
+		assert scrolled.stopped
+	} else {
+		assert false, 'a scroll must be reported'
+	}
+	if _ := pointer.take_scroll() {
+		assert false, 'the scroll was already taken'
+	}
+
+	// A client that bound a compositor older than wl_pointer 8 gets the same
+	// information as wheel clicks, in a frame of its own.
+	discrete, _ := event_bytes(pointer_id, 8, [
+		ArgValue(wayland.wl_pointer_axis_vertical_scroll),
+		ArgValue(i32(3)),
+	])
+	second_axis, _ := event_bytes(pointer_id, 4, [
+		ArgValue(u32(8)),
+		ArgValue(wayland.wl_pointer_axis_vertical_scroll),
+		ArgValue(Fixed.new(45.0)),
+	])
+	second_frame, _ := event_bytes(pointer_id, 5, [])
+	server_write(server_fd, join_bytes([discrete, second_axis, second_frame]), [])!
+	assert client.dispatch_pending()! == 3
+	if scrolled := pointer.take_scroll() {
+		assert scrolled.y == 45.0
+		assert scrolled.steps_y == 3
+		assert !scrolled.stopped
+	} else {
+		assert false, 'the second scroll must be reported'
+	}
+
+	// Buttons report their own serial, which is what the grabs of xdg-shell
+	// take, and the state is the set of buttons held down.
+	press, _ := event_bytes(pointer_id, 3, [
+		ArgValue(u32(21)),
+		ArgValue(u32(9)),
+		ArgValue(wayland.btn_left),
+		ArgValue(wayland.wl_pointer_button_state_pressed),
+	])
+	release, _ := event_bytes(pointer_id, 3, [
+		ArgValue(u32(22)),
+		ArgValue(u32(9)),
+		ArgValue(wayland.btn_left),
+		ArgValue(wayland.wl_pointer_button_state_released),
+	])
+	server_write(server_fd, press, [])!
+	assert client.dispatch_pending()! == 1
+	assert pointer.pressed(wayland.btn_left)
+	assert pointer.pressed_buttons() == [wayland.btn_left]
+	assert button_name(wayland.btn_left)? == 'Left'
+	assert pointer.serial == 21
+	server_write(server_fd, release, [])!
+	assert client.dispatch_pending()! == 1
+	assert !pointer.pressed(wayland.btn_left)
+	assert pointer.serial == 22
+
+	// The cursor is a buffer of its own: setting it attaches the image to the
+	// pointer's cursor surface, damages it, commits that surface and then hands
+	// the whole thing to the compositor with the serial of the input event.
+	mut image := wayland.ShmBuffer.new(shm, 24, 24, wayland.wl_shm_format_argb8888)!
+	defer {
+		image.destroy()
+	}
+	client.flush()!
+	server_read_available(server_fd)!
+	pointer.set_cursor(image, 12, 12)!
+	client.flush()!
+	cursor := split_messages(server_read_available(server_fd)!.data)
+	assert cursor.len == 4
+	assert get_u32_at(cursor[0], 0) == cursor_surface_id
+	assert int(get_u32_at(cursor[0], 4) & 0xffff) == 1 // wl_surface.attach
+	assert get_u32_at(cursor[0], 8) == image.object.id
+	assert int(get_u32_at(cursor[1], 4) & 0xffff) == 2 // wl_surface.damage
+	assert get_i32_at(cursor[1], 16) == 24
+	assert get_i32_at(cursor[1], 20) == 24
+	assert int(get_u32_at(cursor[2], 4) & 0xffff) == 6 // wl_surface.commit
+	assert get_u32_at(cursor[3], 0) == pointer_id
+	assert int(get_u32_at(cursor[3], 4) & 0xffff) == 0 // wl_pointer.set_cursor
+	assert get_u32_at(cursor[3], 8) == 22
+	assert get_u32_at(cursor[3], 12) == cursor_surface_id
+	assert get_i32_at(cursor[3], 16) == 12
+	assert get_i32_at(cursor[3], 20) == 12
+
+	// Hiding it is the same request with a null surface.
+	pointer.hide_cursor()!
+	client.flush()!
+	hidden := split_messages(server_read_available(server_fd)!.data)
+	assert hidden.len == 1
+	assert get_u32_at(hidden[0], 0) == pointer_id
+	assert int(get_u32_at(hidden[0], 4) & 0xffff) == 0 // wl_pointer.set_cursor
+	assert get_u32_at(hidden[0], 12) == 0 // the null surface
+
+	// Leaving the surface drops the focus and the buttons with it: a compositor
+	// keeps sending events to the surface of the press while a button is held,
+	// so a leave means nothing is down any more.
+	server_write(server_fd, press, [])!
+	assert client.dispatch_pending()! == 1
+	assert pointer.pressed(wayland.btn_left)
+	leave, _ := event_bytes(pointer_id, 1, [
+		ArgValue(u32(23)),
+		ArgValue(ObjectRef{
+			id: surface.id
+		}),
+	])
+	server_write(server_fd, leave, [])!
+	assert client.dispatch_pending()! == 1
+	assert !pointer.inside
+	assert !pointer.pressed(wayland.btn_left)
+
+	// A client that is done with the pointer destroys it.
+	pointer.release()!
+	client.flush()!
+	destroyed := split_messages(server_read_available(server_fd)!.data)
+	assert destroyed.len == 1
+	assert get_u32_at(destroyed[0], 0) == pointer_id
+	assert int(get_u32_at(destroyed[0], 4) & 0xffff) == 1 // wl_pointer.release
+}
+
+// Requests carry fixed point arguments the other way around: the client works
+// with plain numbers and the wire needs 24.8. wp_viewport.set_source is the
+// request of the vendored protocols that takes them.
+fn test_request_arguments_encode_fixed_point() {
+	mut client, server_fd := new_pair()!
+	defer {
+		client.close()
+		os.fd_close(server_fd)
+	}
+	viewport_id := client.alloc_id()!
+	client.register_object(viewport_id, 'wp_viewport', &viewporter.wp_viewport_desc)!
+	viewport := viewporter.wp_viewport_proxy(client, viewport_id)
+	viewport.set_source(1.5, -2.25, 3.0, 0.5)!
+	client.flush()!
+	request := server_read_available(server_fd)!
+	assert request.data.len == 24 // the header and four fixed point arguments
+	assert get_u32_at(request.data, 0) == viewport_id
+	assert int(get_u32_at(request.data, 4) & 0xffff) == 1 // wp_viewport.set_source
+	assert int(get_i32_at(request.data, 8)) == 384 // 1.5
+	assert int(get_i32_at(request.data, 12)) == -576 // -2.25, rounded down
+	assert int(get_i32_at(request.data, 16)) == 768 // 3.0
+	assert int(get_i32_at(request.data, 20)) == 128 // 0.5
 }

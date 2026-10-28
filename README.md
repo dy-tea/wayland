@@ -67,14 +67,20 @@ What works today:
 * shared memory buffers: `ShmBuffer` bundles the memory file, the mapping, the
   pool, the buffer and the compositor release tracking, so drawing is writing
   bytes into a slice
-* a real window: `examples/window` opens an xdg-shell toplevel, follows its configure events and animates it from a frame loop until it is closed or Escape is pressed
-* keyboard input: seat capabilities, `wl_keyboard` key events as raw evdev key codes with names for the common ones, and `read_keymap()` for the xkb keymap the compositor sends as a file descriptor
+* a real window: `examples/window` opens an xdg-shell toplevel, follows its configure events and animates it from a frame loop until it is closed or Escape is pressed* keyboard input: seat capabilities, `wl_keyboard` key events as raw evdev key
+  codes with names for the common ones, and `read_keymap()` for the xkb keymap
+  the compositor sends as a file descriptor
+* pointer input: `Pointer` keeps the position, the buttons and the serial the
+  grabs need, hands out the motion and the scroll of a frame, and sets a cursor
+  image; `examples/window` drags itself with the left button and changes speed
+  when scrolled
 
 What is not here yet:
 
 * the server side (implementing a compositor), and protocol *helpers* above the
   generated layer: a reusable window type, and the rest of the input side
-  (pointer, touch, clipboard, cursors)
+  (touch, clipboard, cursor themes - the cursor is an image you draw, since
+  reading the Xcursor files of a theme is a file format of its own)
 * text: turning a key code into a character needs xkb state, which lives in
   `libxkbcommon`. `read_keymap()` hands over the keymap text; interpreting it is
   a different library's job, and doing it in V would be a project of its own
@@ -89,7 +95,7 @@ What is not here yet:
 ```sh
 v run examples/list_globals        # every global the compositor advertises
 v run examples/seat                # bind a seat and print its events
-v run examples/window              # a real xdg-shell window, close it or press Escape
+v run examples/window              # a window: close it, press Escape, drag it, scroll
 v run examples/window -- --frames 60   # present 60 frames, then exit
 v test .                           # unit, generator and end to end tests
 ```
@@ -97,12 +103,14 @@ v test .                           # unit, generator and end to end tests
 `fake_compositor_test.v` implements a compositor in the test file and drives a
 whole window through it: configure, ack, a shared memory buffer built from the
 descriptor the fake compositor receives, the frame callback, the close request
-and the teardown. It also drives the keyboard: capabilities, the keymap
+and the teardown. It also drives the keyboard - capabilities, the keymap
 arriving as a descriptor whose offset is already at the end (the way a
 compositor that wrote through the same descriptor leaves it), focus, key
-presses and releases. The tests in `live_compositor_test.v` talk to the running
-compositor and are skipped when there is no Wayland session; they never attach a
-buffer, so they do not put a window on the screen.
+presses and releases - and the pointer: the enter at a fractional position,
+motion, a frame of scrolling with its source and steps, buttons, and the
+cursor requests that come back. The tests in `live_compositor_test.v` talk to
+the running compositor and are skipped when there is no Wayland session; they
+never attach a buffer, so they do not put a window on the screen.
 
 ## Shared memory buffers
 
@@ -160,6 +168,47 @@ both by mapping the file instead of reading it:
 `examples/window` puts this together: it binds the seat the compositor
 advertises, creates the keyboard from the seat's capabilities, reads the keymap
 and closes when Escape is pressed.
+
+## Pointer input
+
+`wl_pointer` reports the pointer as groups of events that end with
+`wl_pointer.frame`: a scroll arrives as a value, a source and sometimes discrete
+steps, a drag as motion and buttons. `Pointer` collects them, so the frame loop
+reads state instead of implementing the whole event interface:
+
+```v
+mut pointer := wayland.Pointer.new(compositor, seat)! // from the seat capabilities
+mut cursor := wayland.ShmBuffer.new(shm, 24, 24, wl.wl_shm_format_argb8888)!
+...
+if pointer.inside { // x and y are the position in surface pixels
+	println('${pointer.x}, ${pointer.y}')
+}
+if delta := pointer.take_motion() {
+	println('moved ${delta.dx}, ${delta.dy}')
+}
+if scroll := pointer.take_scroll() {
+	println('scrolled ${scroll.y}, ${scroll.steps_y} steps')
+}
+if pointer.pressed(wayland.btn_left) {
+	toplevel.move(seat, pointer.serial)! // the grab takes the serial of the press
+}
+```
+
+The protocol asks clients to accumulate the events of a frame before acting, so
+the helper accumulates them: `take_motion()` and `take_scroll()` return what
+happened since the last call and forget it, and `take_frame()` says that a
+complete frame arrived. Scroll values are plain numbers (the 24.8 fixed point is
+converted), the steps come from `axis_discrete` or, on wl_pointer 8 and later,
+from the 120ths of `axis_value120`, and `stopped` is what kinetic scrolling
+waits for. Buttons are evdev codes, named by `button_name()`, and `serial` is
+the most recent serial from an enter or a button event, which is what
+`set_cursor()`, `xdg_toplevel.move()` and `xdg_toplevel.resize()` expect.
+
+A cursor is an image of yours: `set_cursor()` attaches it to the surface the
+pointer owns, damages it and hands it to the compositor, and `hide_cursor()`
+removes it. The cursor image only changes while the pointer is inside one of the
+client's surfaces, and the protocol leaves it undefined until the client sets
+one after an enter, so both need the serial of that enter.
 
 ## Code generation
 
@@ -245,6 +294,13 @@ mirror uses `i32` and not V's `int` (which is a machine word); the test suite
 asserts the resulting sizes, because a 24 byte control header makes the kernel
 reject every descriptor silently.
 
+**Fixed point.** Coordinates and scroll distances travel as 24.8 fixed point:
+256 counts per unit, signed. Generated listeners and requests work with plain
+`f64` values - the decoder divides, and a request multiplies through
+`Fixed.new()`, the equivalent of `wl_fixed_from_double()` - so application code
+never sees the encoding. `Fixed` itself is the raw value, for the cases where a
+protocol wants it as it is.
+
 **Version negotiation.** `bind_<iface>()` binds `min(global.version,
 interface.version)`, so a client never asks for more than the compositor
 supports, and `bind_global()` refuses a version the compositor did not
@@ -262,9 +318,11 @@ instead of failing, so a partial protocol set keeps working.
 * [`wire.v`](wire.v) and [`args.v`](args.v) — the wire format and argument values
 * [`shm.v`](shm.v) — shared memory buffers for drawing
 * [`input.v`](input.v) — key codes, names and reading the keymap
+* [`pointer.v`](pointer.v) — pointer state, per-frame deltas and cursors
+* [`fixed.v`](fixed.v) — the 24.8 fixed point numbers the wire uses
 * [`gen/emit.v`](gen/emit.v) — what a generated module looks like, and why
 * [`examples/seat`](examples/seat) — listeners end to end
-* [`examples/window`](examples/window) — a real window: roles, configure, frame loop
+* [`examples/window`](examples/window) — a real window: roles, configure, frame loop, input
 
 ## Protocol files and license
 

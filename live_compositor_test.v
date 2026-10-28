@@ -290,3 +290,77 @@ fn test_live_keyboard_keymap() {
 	assert state.keymap.contains('xkb_symbols') // the section these keymaps end with
 	assert key_name(key_escape)? == 'Escape'
 }
+
+// A pointer is created the way the example creates one: the seat has to
+// advertise the capability, and from there the helper owns the cursor surface.
+// Without a surface of this client under the pointer no events arrive, so this
+// test checks the creation, what the helper refuses before it has a serial, and
+// that the connection stays usable after the pointer is released.
+fn test_live_pointer() {
+	if !live_session_available() {
+		eprintln('wayland: skipping live pointer test, no Wayland session')
+		return
+	}
+	mut conn := connect()!
+	defer {
+		conn.close()
+	}
+	globals := conn.globals()!
+	seat_global := globals.find('wl_seat') or {
+		eprintln('wayland: skipping live pointer test, no wl_seat global')
+		return
+	}
+	compositor_global := globals.find('wl_compositor') or {
+		eprintln('wayland: skipping live pointer test, no wl_compositor global')
+		return
+	}
+	seat := wayland.bind_wl_seat(conn, seat_global)!
+	compositor := wayland.bind_wl_compositor(conn, compositor_global)!
+	// wl_seat.get_pointer is only allowed when the seat says it has one.
+	mut seat_listener := LiveSeatListener{}
+	seat.set_listener(&seat_listener)!
+	conn.roundtrip()!
+	if seat_listener.capabilities & wayland.wl_seat_capability_pointer == 0 {
+		eprintln('wayland: skipping live pointer test, the seat has no pointer')
+		return
+	}
+	mut pointer := wayland.Pointer.new(compositor, seat)!
+	// Nothing of this client is under the pointer, so it never entered one of
+	// our surfaces and there is no input to take.
+	assert !pointer.inside
+	assert !pointer.take_frame()
+	assert pointer.pressed_buttons() == []
+	if _ := pointer.take_motion() {
+		assert false, 'no surface of this client was entered, so nothing moved'
+	}
+	if _ := pointer.take_scroll() {
+		assert false, 'no surface of this client was entered, so nothing scrolled'
+	}
+
+	// A cursor image belongs to an enter event: without one there is no serial
+	// to set it with, and the helper says so instead of sending a stale one.
+	shm_global := globals.find('wl_shm') or {
+		eprintln('wayland: skipping the cursor part of the live pointer test, no wl_shm global')
+		return
+	}
+	shm := wayland.bind_wl_shm(conn, shm_global)!
+	mut cursor_image := wayland.ShmBuffer.new(shm, 24, 24, wayland.wl_shm_format_argb8888)!
+	defer {
+		cursor_image.destroy()
+	}
+	if _ := pointer.set_cursor(cursor_image, 12, 12) {
+		assert false, 'set_cursor before an enter has no serial to use'
+	} else {
+		assert err.msg().contains('serial')
+	}
+	if _ := pointer.hide_cursor() {
+		assert false, 'hide_cursor before an enter has no serial to use'
+	} else {
+		assert err.msg().contains('serial')
+	}
+
+	// Releasing it destroys the object without disturbing the rest of the
+	// connection.
+	pointer.release()!
+	conn.roundtrip()!
+}

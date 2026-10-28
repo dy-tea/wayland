@@ -31,6 +31,11 @@ fn test_fixed_point_conversion() {
 	assert Fixed.new(-2.25).f64() == -2.25
 	assert Fixed(0).f64() == 0.0
 	assert Fixed.new(-1.0) == -256
+	// wl_fixed_from_double() rounds half up, on both sides of zero.
+	assert Fixed.new(2.5) == 640
+	assert Fixed.new(-2.5) == -640
+	assert Fixed.new(1.0 / 512.0) == 1
+	assert Fixed.new(-1.0 / 512.0) == 0
 }
 
 fn test_padding_helper() {

@@ -350,8 +350,14 @@ fn (mut e Emitter) emit_sink(iface &Interface) {
 fn (mut e Emitter) emit_event_arg_decode(arg &Arg, index int) {
 	name := v_ident(arg.name)
 	match arg.kind {
-		'int', 'fixed', 'string', 'array', 'fd' {
+		'int', 'string', 'array', 'fd' {
 			e.line('\t\t\t${name} := msg.arg_${arg.kind}(${index})!')
+		}
+		'fixed' {
+			// The wire carries 24.8 fixed point; listeners see plain numbers, and
+			// a bare `Fixed` would be converted bit for bit (no division) because V
+			// widens it to the f64 parameter without complaining.
+			e.line('\t\t\t${name} := msg.arg_fixed(${index})!.f64()')
 		}
 		'uint' {
 			e.line('\t\t\t${name} := msg.arg_u32(${index})!')
@@ -439,8 +445,14 @@ fn (mut e Emitter) emit_request(iface &Interface, request &Message) {
 	for arg in request.args {
 		name := v_ident(arg.name)
 		match arg.kind {
-			'int', 'uint', 'fixed', 'string', 'array' {
+			'int', 'uint', 'string', 'array' {
 				encoded << 'wayland.ArgValue(${name})'
+			}
+			'fixed' {
+				// Requests take plain numbers as well, and the wire needs the 24.8
+				// value: without this the conversion truncates the number to a whole
+				// fixed value, which is a 1/256 of a unit on the wire.
+				encoded << 'wayland.ArgValue(wayland.Fixed.new(${name}))'
 			}
 			'fd' {
 				encoded << 'wayland.ArgValue(wayland.Fd{ fd: ${name} })'
