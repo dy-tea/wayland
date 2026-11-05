@@ -255,7 +255,7 @@ fn test_emit_uses_externs_for_other_protocols() {
 
 fn test_every_vendored_protocol_generates() {
 	files := protocol_files([os.join_path(@DIR, '..', 'protocols', 'xml')])!
-	assert files.len >= 4
+	assert files.len >= 5
 	for file in files {
 		protocol := load_protocol(file)!
 		assert protocol.interfaces.len > 0
@@ -282,4 +282,76 @@ fn test_parse_xml_reports_errors() {
 	} else {
 		assert err.msg().contains('broken')
 	}
+}
+
+fn test_parse_wlr_layer_shell_xml() {
+	protocol := load_protocol(protocol_path('wlr-layer-shell-unstable-v1.xml'))!
+	assert protocol.name == 'wlr_layer_shell_unstable_v1'
+	assert protocol.interfaces.len == 2
+
+	shell := find_interface(protocol, 'zwlr_layer_shell_v1')
+	assert shell.version == 5
+	get_layer_surface := find_message(shell.requests, 'get_layer_surface')
+	assert get_layer_surface.opcode == 0
+	assert get_layer_surface.args.len == 5
+	assert get_layer_surface.args[0].kind == 'new_id'
+	assert get_layer_surface.args[0].iface == 'zwlr_layer_surface_v1'
+	assert get_layer_surface.args[1].kind == 'object'
+	assert get_layer_surface.args[1].iface == 'wl_surface'
+	// The output is optional: a client may let the compositor pick one.
+	assert get_layer_surface.args[2].iface == 'wl_output'
+	assert get_layer_surface.args[2].nullable
+	assert get_layer_surface.args[3].kind == 'uint'
+	assert get_layer_surface.args[3].enum_name == 'layer'
+	assert get_layer_surface.args[4].kind == 'string'
+	destroy := find_message(shell.requests, 'destroy')
+	assert destroy.destructor
+	assert destroy.since == 3
+	layer := find_enum(shell.enums, 'layer')
+	assert !layer.bitfield
+	assert layer.entries.len == 4
+	assert layer.entries[2].name == 'top'
+	assert layer.entries[2].value == 2
+
+	surface := find_interface(protocol, 'zwlr_layer_surface_v1')
+	assert surface.version == 5
+	configure := find_message(surface.events, 'configure')
+	assert configure.opcode == 0
+	assert configure.args.len == 3
+	assert configure.args[0].kind == 'uint'
+	assert configure.args[1].kind == 'uint'
+	assert configure.args[2].kind == 'uint'
+	assert find_message(surface.events, 'closed').opcode == 1
+	anchor := find_enum(surface.enums, 'anchor')
+	assert anchor.bitfield
+	assert anchor.entries.len == 4
+	assert anchor.entries[0].name == 'top'
+	assert anchor.entries[0].value == 1
+	assert anchor.entries[3].value == 8
+	assert find_message(surface.requests, 'set_layer').since == 2
+	assert find_message(surface.requests, 'set_exclusive_edge').since == 5
+	assert find_message(surface.requests, 'get_popup').args[0].iface == 'xdg_popup'
+}
+
+fn test_emit_wlr_layer_shell_module() {
+	wayland := load_protocol(protocol_path('wayland.xml'))!
+	xdg := load_protocol(protocol_path('xdg-shell.xml'))!
+	layer := load_protocol(protocol_path('wlr-layer-shell-unstable-v1.xml'))!
+	externs := externs_for([&wayland, &xdg, &layer], 'wayland.protocols',
+		'wlr_layer_shell_unstable_v1')
+	source := emit_module(&layer, EmitOptions{
+		externs: externs
+	})!
+	// The interfaces of the other protocols are typed, including the nullable
+	// output and the xdg_popup parent of get_popup.
+	assert source.contains('pub fn (proxy &ZwlrLayerShellV1) get_layer_surface(surface wl.WlSurface, output ?wl.WlOutput, layer u32, namespace string) !ZwlrLayerSurfaceV1 {')
+	assert source.contains('pub fn (proxy &ZwlrLayerSurfaceV1) get_popup(popup xdg_shell.XdgPopup) ! {')
+	// Only the shell is a global: the surface role is created by get_layer_surface.
+	assert source.contains('pub fn bind_zwlr_layer_shell_v1(conn &wayland.Connection, global wayland.Global) !ZwlrLayerShellV1 {')
+	assert !source.contains('pub fn bind_zwlr_layer_surface_v1(')
+	// The enums become constants, including the bitfield entries.
+	assert source.contains('pub const zwlr_layer_shell_v1_layer_top = u32(2)')
+	assert source.contains('pub const zwlr_layer_surface_v1_anchor_top = u32(1)')
+	assert source.contains('pub const zwlr_layer_surface_v1_anchor_right = u32(8)')
+	assert source.contains('pub const zwlr_layer_surface_v1_keyboard_interactivity_on_demand = u32(2)')
 }

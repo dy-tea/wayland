@@ -3,6 +3,7 @@ module wayland
 import os
 import time
 import wayland.protocols.wayland
+import wayland.protocols.wlr_layer_shell_unstable_v1 as layer_shell
 import wayland.protocols.xdg_shell
 
 // Tests against the real compositor of the current session. They are skipped
@@ -363,4 +364,83 @@ fn test_live_pointer() {
 	// connection.
 	pointer.release()!
 	conn.roundtrip()!
+}
+
+// A layer surface is configured before it may map, exactly like a toplevel,
+// but its role also carries the anchors and the exclusive zone. The test stops
+// after the ack: no buffer is attached, so nothing is put on the screen.
+struct LiveLayerSurfaceListener {
+mut:
+	configured bool
+	serial     u32
+	width      u32
+	height     u32
+}
+
+fn (mut listener LiveLayerSurfaceListener) configure(_ layer_shell.ZwlrLayerSurfaceV1, serial u32, width u32, height u32) {
+	listener.configured = true
+	listener.serial = serial
+	listener.width = width
+	listener.height = height
+}
+
+fn (mut listener LiveLayerSurfaceListener) closed(_ layer_shell.ZwlrLayerSurfaceV1) {
+}
+
+fn test_live_wlr_layer_shell() {
+	if !live_session_available() {
+		eprintln('wayland: skipping live layer shell test, no Wayland session')
+		return
+	}
+	mut conn := connect()!
+	defer {
+		conn.close()
+	}
+	globals := conn.globals()!
+	compositor_global := globals.find('wl_compositor') or {
+		eprintln('wayland: skipping live layer shell test, no wl_compositor global')
+		return
+	}
+	shell_global := globals.find('zwlr_layer_shell_v1') or {
+		eprintln('wayland: skipping live layer shell test, no zwlr_layer_shell_v1 global')
+		return
+	}
+	compositor := wayland.bind_wl_compositor(conn, compositor_global)!
+	shell := layer_shell.bind_zwlr_layer_shell_v1(conn, shell_global)!
+
+	surface := compositor.create_surface()!
+	layer_surface := shell.get_layer_surface(surface, none,
+		layer_shell.zwlr_layer_shell_v1_layer_top, 'wayland-test')!
+	// Width zero with the left and right anchors asks the compositor to assign
+	// the width of the output; the height is the panel height.
+	layer_surface.set_size(0, 32)!
+	layer_surface.set_anchor(layer_shell.zwlr_layer_surface_v1_anchor_top |
+		layer_shell.zwlr_layer_surface_v1_anchor_left |
+		layer_shell.zwlr_layer_surface_v1_anchor_right)!
+	layer_surface.set_exclusive_zone(32)!
+	layer_surface.set_keyboard_interactivity(layer_shell.zwlr_layer_surface_v1_keyboard_interactivity_none)!
+	mut listener := LiveLayerSurfaceListener{}
+	layer_surface.set_listener(&listener)!
+
+	// The initial commit carries no buffer and asks for the configure; without
+	// the ack and a buffer the surface never maps.
+	surface.commit()!
+	mut tries := 0
+	for !listener.configured && tries < 20 {
+		conn.roundtrip()!
+		time.sleep(5 * time.millisecond)
+		tries++
+	}
+	assert listener.configured
+	assert listener.serial != 0
+	assert listener.height == 32
+	assert listener.width > 0 // assigned because both side anchors are set
+	layer_surface.ack_configure(listener.serial)!
+
+	// Tear the role down without ever attaching a buffer.
+	layer_surface.destroy()!
+	surface.destroy()!
+	conn.roundtrip()!
+	assert !layer_surface.is_alive()
+	assert !surface.is_alive()
 }

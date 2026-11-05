@@ -3,6 +3,7 @@ module wayland
 import os
 import wayland.protocols.viewporter
 import wayland.protocols.wayland
+import wayland.protocols.wlr_layer_shell_unstable_v1 as layer_shell
 import wayland.protocols.xdg_shell
 
 // End to end tests against a compositor implemented in this file.
@@ -1160,4 +1161,162 @@ fn test_request_arguments_encode_fixed_point() {
 	assert int(get_i32_at(request.data, 12)) == -576 // -2.25, rounded down
 	assert int(get_i32_at(request.data, 16)) == 768 // 3.0
 	assert int(get_i32_at(request.data, 20)) == 128 // 0.5
+}
+
+// --- layer shell -------------------------------------------------------------
+//
+// A layer surface is a role on a wl_surface: the client asks for one, the
+// compositor answers with a configure event, and only after the ack and a
+// commit with a buffer does the surface map. The requests carry the anchor
+// bitfield and the namespace string, which is where a wrong encoder shows up.
+
+struct LayerSurfaceState {
+mut:
+	configured bool
+	serial     u32
+	width      u32
+	height     u32
+	closed     bool
+}
+
+struct LayerSurfaceListener {
+mut:
+	state &LayerSurfaceState
+}
+
+fn (mut listener LayerSurfaceListener) configure(_ layer_shell.ZwlrLayerSurfaceV1, serial u32, width u32, height u32) {
+	listener.state.configured = true
+	listener.state.serial = serial
+	listener.state.width = width
+	listener.state.height = height
+}
+
+fn (mut listener LayerSurfaceListener) closed(_ layer_shell.ZwlrLayerSurfaceV1) {
+	listener.state.closed = true
+}
+
+fn test_wlr_layer_surface_flow() {
+	mut client, server_fd := new_pair()!
+	defer {
+		client.close()
+		os.fd_close(server_fd)
+	}
+	// A compositor with the two globals a layer surface needs.
+	compositor_global, _ := event_bytes(u32(2), 0, [
+		ArgValue(u32(1)),
+		ArgValue('wl_compositor'),
+		ArgValue(u32(6)),
+	])
+	layer_shell_global, _ := event_bytes(u32(2), 0, [
+		ArgValue(u32(2)),
+		ArgValue('zwlr_layer_shell_v1'),
+		ArgValue(u32(5)),
+	])
+	done, _ := event_bytes(u32(3), 0, [ArgValue(u32(1))])
+	server_write(server_fd, join_bytes([compositor_global, layer_shell_global, done]), [])!
+
+	globals := client.globals()!
+	compositor := wayland.bind_wl_compositor(client, globals.find('wl_compositor')!)!
+	shell := layer_shell.bind_zwlr_layer_shell_v1(client, globals.find('zwlr_layer_shell_v1')!)!
+	// The registry roundtrip and the two binds are already on the wire.
+	server_read_available(server_fd)!
+
+	// --- the client creates the surface and configures the role ---
+	surface := compositor.create_surface()!
+	layer_surface := shell.get_layer_surface(surface, none,
+		layer_shell.zwlr_layer_shell_v1_layer_top, 'wayland-test')!
+	assert layer_surface.iface == 'zwlr_layer_surface_v1'
+	layer_surface.set_size(0, 32)!
+	layer_surface.set_anchor(layer_shell.zwlr_layer_surface_v1_anchor_top |
+		layer_shell.zwlr_layer_surface_v1_anchor_left |
+		layer_shell.zwlr_layer_surface_v1_anchor_right)!
+	layer_surface.set_exclusive_zone(32)!
+	layer_surface.set_keyboard_interactivity(layer_shell.zwlr_layer_surface_v1_keyboard_interactivity_none)!
+	mut state := LayerSurfaceState{}
+	mut listener := LayerSurfaceListener{
+		state: &state
+	}
+	layer_surface.set_listener(&listener)!
+	// The first commit has no buffer attached: it asks for the configure.
+	surface.commit()!
+	client.flush()!
+	setup := split_messages(server_read_available(server_fd)!.data)
+	assert setup.len == 7
+
+	// wl_compositor.create_surface.
+	assert get_u32_at(setup[0], 0) == compositor.id
+	assert int(get_u32_at(setup[0], 4) & 0xffff) == 0
+	assert get_u32_at(setup[0], 8) == surface.id
+
+	// zwlr_layer_shell_v1.get_layer_surface: id, surface, null output, layer,
+	// namespace. The message is 44 bytes: the namespace is "wayland-test", 13
+	// bytes with the NUL, padded to 16.
+	assert get_u32_at(setup[1], 0) == shell.id
+	assert int(get_u32_at(setup[1], 4) & 0xffff) == 0
+	assert setup[1].len == 44
+	assert get_u32_at(setup[1], 8) == layer_surface.id
+	assert get_u32_at(setup[1], 12) == surface.id
+	assert get_u32_at(setup[1], 16) == 0 // no output: the compositor decides
+	assert get_u32_at(setup[1], 20) == layer_shell.zwlr_layer_shell_v1_layer_top
+	assert get_u32_at(setup[1], 24) == 13 // the length includes the NUL
+	assert setup[1][28..40].bytestr() == 'wayland-test'
+
+	// The double-buffered role state: size, anchor and exclusive zone, then the
+	// keyboard interactivity. Anchor top|left|right is 1|4|8.
+	assert get_u32_at(setup[2], 0) == layer_surface.id
+	assert int(get_u32_at(setup[2], 4) & 0xffff) == 0 // set_size
+	assert get_u32_at(setup[2], 8) == 0 // width: assigned by the compositor
+	assert get_u32_at(setup[2], 12) == 32
+	assert int(get_u32_at(setup[3], 4) & 0xffff) == 1 // set_anchor
+	assert get_u32_at(setup[3], 8) == 13
+	assert int(get_u32_at(setup[4], 4) & 0xffff) == 2 // set_exclusive_zone
+	assert get_i32_at(setup[4], 8) == 32
+	assert int(get_u32_at(setup[5], 4) & 0xffff) == 4 // set_keyboard_interactivity
+	assert get_u32_at(setup[5], 8) == layer_shell.zwlr_layer_surface_v1_keyboard_interactivity_none
+	assert get_u32_at(setup[6], 0) == surface.id
+	assert int(get_u32_at(setup[6], 4) & 0xffff) == 6 // wl_surface.commit
+	assert setup[6].len == 8 // no buffer yet
+
+	// --- the compositor configures, the client acks ---
+	configure, _ := event_bytes(layer_surface.id, 0, [
+		ArgValue(u32(9)),
+		ArgValue(u32(1280)),
+		ArgValue(u32(32)),
+	])
+	server_write(server_fd, configure, [])!
+	assert client.dispatch_pending()! == 1
+	assert state.configured
+	assert state.serial == 9
+	assert state.width == 1280
+	assert state.height == 32
+
+	layer_surface.ack_configure(state.serial)!
+	client.flush()!
+	ack := split_messages(server_read_available(server_fd)!.data)
+	assert ack.len == 1
+	assert get_u32_at(ack[0], 0) == layer_surface.id
+	assert int(get_u32_at(ack[0], 4) & 0xffff) == 6 // ack_configure
+	assert get_u32_at(ack[0], 8) == 9
+
+	// --- the compositor closes the surface, the client tears it down ---
+	closed, _ := event_bytes(layer_surface.id, 1, [])
+	server_write(server_fd, closed, [])!
+	assert client.dispatch_pending()! == 1
+	assert state.closed
+
+	layer_surface.destroy()!
+	shell.destroy()!
+	surface.destroy()!
+	client.flush()!
+	destroyed := split_messages(server_read_available(server_fd)!.data)
+	assert destroyed.len == 3
+	assert get_u32_at(destroyed[0], 0) == layer_surface.id
+	assert int(get_u32_at(destroyed[0], 4) & 0xffff) == 7 // layer_surface.destroy
+	assert get_u32_at(destroyed[1], 0) == shell.id
+	assert int(get_u32_at(destroyed[1], 4) & 0xffff) == 1 // layer_shell.destroy
+	assert get_u32_at(destroyed[2], 0) == surface.id
+	assert int(get_u32_at(destroyed[2], 4) & 0xffff) == 0 // surface.destroy
+	assert !layer_surface.is_alive()
+	assert !shell.is_alive()
+	assert !surface.is_alive()
 }

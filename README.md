@@ -54,8 +54,9 @@ What works today:
 
 * connecting over `WAYLAND_SOCKET`, `WAYLAND_DISPLAY` or `XDG_RUNTIME_DIR`
 * global discovery, binding with version negotiation, untyped and typed binding
-* generated proxies for the core protocol, `xdg-shell`, `viewporter` and
-  `presentation-time`, plus whatever else you point the generator at
+* generated proxies for the core protocol, `xdg-shell`, `viewporter`,
+  `presentation-time` and `wlr-layer-shell-v1`, plus whatever else you point
+  the generator at
 * request marshalling with typed arguments, including `new_id` arguments (which
   return a proxy for the object the compositor creates)
 * event decoding and dispatch to `mut` listener methods, including nullable
@@ -67,7 +68,13 @@ What works today:
 * shared memory buffers: `ShmBuffer` bundles the memory file, the mapping, the
   pool, the buffer and the compositor release tracking, so drawing is writing
   bytes into a slice
-* a real window: `examples/window` opens an xdg-shell toplevel, follows its configure events and animates it from a frame loop until it is closed or Escape is pressed* keyboard input: seat capabilities, `wl_keyboard` key events as raw evdev key
+* a real window: `examples/window` opens an xdg-shell toplevel, follows its
+  configure events and animates it from a frame loop until it is closed or
+  Escape is pressed
+* layer shell: `examples/layer_shell` gives a surface the `zwlr_layer_surface_v1`
+  role, anchors it to the top edge of the output and maps it after the
+  configure/ack handshake
+* keyboard input: seat capabilities, `wl_keyboard` key events as raw evdev key
   codes with names for the common ones, and `read_keymap()` for the xkb keymap
   the compositor sends as a file descriptor
 * pointer input: `Pointer` keeps the position, the buttons and the serial the
@@ -97,13 +104,16 @@ v run examples/list_globals        # every global the compositor advertises
 v run examples/seat                # bind a seat and print its events
 v run examples/window              # a window: close it, press Escape, drag it, scroll
 v run examples/window -- --frames 60   # present 60 frames, then exit
+v run examples/layer_shell         # a top panel: anchored, with an exclusive zone
+v run examples/layer_shell -- --frames 120   # draw 120 frames, then exit
 v test .                           # unit, generator and end to end tests
 ```
 
 `fake_compositor_test.v` implements a compositor in the test file and drives a
 whole window through it: configure, ack, a shared memory buffer built from the
 descriptor the fake compositor receives, the frame callback, the close request
-and the teardown. It also drives the keyboard - capabilities, the keymap
+and the teardown. It drives a layer surface through the same configure/ack
+handshake, and it also drives the keyboard - capabilities, the keymap
 arriving as a descriptor whose offset is already at the end (the way a
 compositor that wrote through the same descriptor leaves it), focus, key
 presses and releases - and the pointer: the enter at a fractional position,
@@ -209,6 +219,33 @@ pointer owns, damages it and hands it to the compositor, and `hide_cursor()`
 removes it. The cursor image only changes while the pointer is inside one of the
 client's surfaces, and the protocol leaves it undefined until the client sets
 one after an enter, so both need the serial of that enter.
+
+## Layer shell
+
+`wlr-layer-shell-v1` is the wlroots protocol behind panels, bars and
+wallpapers. It is generated like every other protocol module; the difference
+from a window is the role and the handshake. A `zwlr_layer_surface_v1` is
+configured by the compositor before it may map, and its anchors and exclusive
+zone decide where it sits. `examples/layer_shell` is a 32 pixel top panel:
+
+```v
+import wayland.protocols.wlr_layer_shell_unstable_v1 as layer_shell
+
+shell := layer_shell.bind_zwlr_layer_shell_v1(conn, shell_global)!
+surface := compositor.create_surface()!
+layer_surface := shell.get_layer_surface(surface, none, layer_shell.zwlr_layer_shell_v1_layer_top, 'my-panel')!
+layer_surface.set_size(0, 32) // width 0 + both side anchors: the compositor assigns it
+layer_surface.set_anchor(layer_shell.zwlr_layer_surface_v1_anchor_top |
+	layer_shell.zwlr_layer_surface_v1_anchor_left |
+	layer_shell.zwlr_layer_surface_v1_anchor_right)!
+layer_surface.set_exclusive_zone(32) // reserve the top 32 pixels for the panel
+layer_surface.set_keyboard_interactivity(layer_shell.zwlr_layer_surface_v1_keyboard_interactivity_none)!
+surface.commit()! // no buffer yet: this asks for the configure event
+// ack the configure in its listener, then attach a buffer and commit to map
+```
+
+Layer shell is a wlroots protocol, not a wayland-protocols one: bind it only
+when the compositor advertises `zwlr_layer_shell_v1`, the way the example does.
 
 ## Code generation
 
@@ -323,10 +360,12 @@ instead of failing, so a partial protocol set keeps working.
 * [`gen/emit.v`](gen/emit.v) — what a generated module looks like, and why
 * [`examples/seat`](examples/seat) — listeners end to end
 * [`examples/window`](examples/window) — a real window: roles, configure, frame loop, input
+* [`examples/layer_shell`](examples/layer_shell) — a top panel: the layer surface role and its anchors
 
 ## Protocol files and license
 
-`protocols/xml` contains the protocol descriptions (the core `wayland.xml` and
-the stable wayland-protocols files), each under its original license and
+`protocols/xml` contains the protocol descriptions (the core `wayland.xml`, the
+stable wayland-protocols files and the wlr-protocols layer shell file), each
+under its original license and
 copyright, kept unchanged from the upstream releases. The generated modules in
 `protocols/*` derive from those files.
