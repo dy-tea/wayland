@@ -4,6 +4,8 @@ import os
 import wayland
 import wayland.protocols.wayland as wl
 import wayland.protocols.xdg_shell
+import wayland.protocols.xdg_decoration_unstable_v1 as xdg_decoration
+import wayland.protocols.pointer_gestures_unstable_v1 as gestures
 
 // Opens a real xdg-shell toplevel window, animates it and exits when the
 // window is closed or Escape is pressed.
@@ -74,6 +76,18 @@ mut:
 	speed f64 = 1.0
 }
 
+// DecorationListener is told which decoration mode the compositor picked.
+struct DecorationListener {}
+
+fn (mut listener DecorationListener) configure(_ xdg_decoration.ZxdgToplevelDecorationV1, mode u32) {
+	name := match mode {
+		xdg_decoration.zxdg_toplevel_decoration_v1_mode_client_side { 'client side' }
+		xdg_decoration.zxdg_toplevel_decoration_v1_mode_server_side { 'server side' }
+		else { 'mode ${mode}' }
+	}
+	println('window: decoration mode ${name}')
+}
+
 // WmBaseListener answers xdg_wm_base pings: a client that stays silent may be
 // considered unresponsive.
 struct WmBaseListener {}
@@ -137,8 +151,10 @@ fn (mut listener FrameListener) done(_ wl.WlCallback, _callback_data u32) {
 // is sent again whenever devices come and go.
 struct SeatListener {
 mut:
-	state      &State
-	compositor wl.WlCompositor
+	state            &State
+	compositor       wl.WlCompositor
+	gestures_manager ?gestures.ZwpPointerGesturesV1
+	gestures_created bool
 }
 
 fn (mut listener SeatListener) capabilities(seat wl.WlSeat, capabilities u32) {
@@ -180,6 +196,24 @@ fn (mut listener SeatListener) update_pointer(seat wl.WlSeat, capabilities u32) 
 		}
 		listener.state.pointer = pointer
 		println('input: pointer ready')
+		if manager := listener.gestures_manager {
+			// A second pointer object is created for the gesture objects: the
+			// helper above keeps its own, and the gesture events are tied to
+			// whichever pointer object they were created with.
+			if pointer_proxy := seat.get_pointer() {
+				if swipe := manager.get_swipe_gesture(pointer_proxy) {
+					swipe.set_listener(&SwipeListener{}) or {}
+				}
+				if pinch := manager.get_pinch_gesture(pointer_proxy) {
+					pinch.set_listener(&PinchListener{}) or {}
+				}
+				if hold := manager.get_hold_gesture(pointer_proxy) {
+					hold.set_listener(&HoldListener{}) or {}
+				}
+				listener.gestures_created = true
+				println('input: pointer gestures ready')
+			}
+		}
 	} else if !has_pointer && listener.state.pointer != unsafe { nil } {
 		mut pointer := listener.state.pointer
 		pointer.release() or {}
@@ -190,6 +224,59 @@ fn (mut listener SeatListener) update_pointer(seat wl.WlSeat, capabilities u32) 
 }
 
 fn (mut listener SeatListener) name(_ wl.WlSeat, _name string) {
+}
+
+// Gesture listeners print what the compositor reports, which is the point of
+// the example: the events arrive in the same frame loop, but the window does
+// not need to react to them.
+struct SwipeListener {}
+
+fn (mut listener SwipeListener) begin(_ gestures.ZwpPointerGestureSwipeV1, _serial u32, _time u32, _surface wl.WlSurface, fingers u32) {
+	println('input: swipe begin with ${fingers} fingers')
+}
+
+fn (mut listener SwipeListener) update(_ gestures.ZwpPointerGestureSwipeV1, _time u32, dx f64, dy f64) {
+	println('input: swipe update ${dx:.1f},${dy:.1f}')
+}
+
+fn (mut listener SwipeListener) end(_ gestures.ZwpPointerGestureSwipeV1, _serial u32, _time u32, cancelled i32) {
+	if cancelled != 0 {
+		println('input: swipe cancelled')
+	} else {
+		println('input: swipe end')
+	}
+}
+
+struct PinchListener {}
+
+fn (mut listener PinchListener) begin(_ gestures.ZwpPointerGesturePinchV1, _serial u32, _time u32, _surface wl.WlSurface, fingers u32) {
+	println('input: pinch begin with ${fingers} fingers')
+}
+
+fn (mut listener PinchListener) update(_ gestures.ZwpPointerGesturePinchV1, _time u32, dx f64, dy f64, scale f64, rotation f64) {
+	println('input: pinch update ${dx:.1f},${dy:.1f} scale ${scale:.2f} rotation ${rotation:.1f}')
+}
+
+fn (mut listener PinchListener) end(_ gestures.ZwpPointerGesturePinchV1, _serial u32, _time u32, cancelled i32) {
+	if cancelled != 0 {
+		println('input: pinch cancelled')
+	} else {
+		println('input: pinch end')
+	}
+}
+
+struct HoldListener {}
+
+fn (mut listener HoldListener) begin(_ gestures.ZwpPointerGestureHoldV1, _serial u32, _time u32, _surface wl.WlSurface, fingers u32) {
+	println('input: hold begin with ${fingers} fingers')
+}
+
+fn (mut listener HoldListener) end(_ gestures.ZwpPointerGestureHoldV1, _serial u32, _time u32, cancelled i32) {
+	if cancelled != 0 {
+		println('input: hold cancelled')
+	} else {
+		println('input: hold end')
+	}
 }
 
 // KeyboardListener receives keyboard events. The key codes are raw evdev codes:
@@ -474,6 +561,17 @@ fn main() {
 	toplevel.set_title('wayland')!
 	toplevel.set_app_id('dev.wayland.window')!
 
+	// Ask for server-side decorations when the compositor can draw a frame
+	// around the window. The configure event that follows tells whether it
+	// agreed to: client_side means this program still has to draw its own.
+	if decoration_global := globals.find('zxdg_decoration_manager_v1') {
+		manager := xdg_decoration.bind_zxdg_decoration_manager_v1(conn, decoration_global)!
+		mut decoration := manager.get_toplevel_decoration(toplevel)!
+		decoration.set_listener(&DecorationListener{})!
+		decoration.set_mode(xdg_decoration.zxdg_toplevel_decoration_v1_mode_server_side)!
+		println('window: asked for server-side decorations')
+	}
+
 	mut state := State{}
 	mut surface_listener := SurfaceListener{
 		state: &state
@@ -492,6 +590,9 @@ fn main() {
 	mut seat_listener := SeatListener{
 		state:      &state
 		compositor: compositor
+	}
+	if gestures_global := globals.find('zwp_pointer_gestures_v1') {
+		seat_listener.gestures_manager = gestures.bind_zwp_pointer_gestures_v1(conn, gestures_global)!
 	}
 	mut seat := wl.WlSeat{}
 	mut seat_bound := false

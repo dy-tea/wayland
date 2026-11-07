@@ -49,7 +49,7 @@ pub fn ShmBuffer.new(shm wl.WlShm, width int, height int, format u32) !&ShmBuffe
 		return error('a shared memory buffer needs a positive size, got ${width}x${height}')
 	}
 	if !is_32_bit_shm_format(format) {
-		return error('wl_shm format ${format} is not a 32 bit format; use wl_shm_format_xrgb8888 or wl_shm_format_argb8888')
+		return error('wl_shm format ${format} is not a 32 bit format; use wl_shm_format_xrgb8888, wl_shm_format_argb8888, wl_shm_format_xbgr8888 or wl_shm_format_abgr8888')
 	}
 	stride := width * 4
 	size := stride * height

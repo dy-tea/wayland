@@ -49,8 +49,9 @@ What works today:
 * connecting over `WAYLAND_SOCKET`, `WAYLAND_DISPLAY` or `XDG_RUNTIME_DIR`
 * global discovery, binding with version negotiation, untyped and typed binding
 * generated proxies for the core protocol, `xdg-shell`, `viewporter`,
-  `presentation-time` and `wlr-layer-shell-v1`, plus whatever else you point
-  the generator at
+  `presentation-time`, `xdg-output`, `xdg-decoration`, `cursor-shape`,
+  `fractional-scale`, `pointer-gestures`, `wlr-layer-shell-v1` and
+  `wlr-screencopy-v1`, plus whatever else you point the generator at
 * request marshalling with typed arguments, including `new_id` arguments (which
   return a proxy for the object the compositor creates)
 * event decoding and dispatch to `mut` listener methods, including nullable
@@ -95,6 +96,7 @@ What is not here yet:
 
 ```sh
 v run examples/list_globals        # every global the compositor advertises
+v run examples/outputs            # wl_output plus xdg-output: logical position, mode, scale
 v run examples/seat                # bind a seat and print its events
 v run examples/window              # a window: close it, press Escape, drag it, scroll
 v run examples/window -- --frames 60   # present 60 frames, then exit

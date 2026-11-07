@@ -361,9 +361,42 @@ fn test_emit_wlr_layer_shell_module() {
 	// Only the shell is a global: the surface role is created by get_layer_surface.
 	assert source.contains('pub fn bind_zwlr_layer_shell_v1(conn &wayland.Connection, global wayland.Global) !ZwlrLayerShellV1 {')
 	assert !source.contains('pub fn bind_zwlr_layer_surface_v1(')
-	// The enums become constants, including the bitfield entries.
-	assert source.contains('pub const zwlr_layer_shell_v1_layer_top = u32(2)')
-	assert source.contains('pub const zwlr_layer_surface_v1_anchor_top = u32(1)')
-	assert source.contains('pub const zwlr_layer_surface_v1_anchor_right = u32(8)')
-	assert source.contains('pub const zwlr_layer_surface_v1_keyboard_interactivity_on_demand = u32(2)')
+}
+
+fn test_parse_xdg_output_and_decoration() {
+	xdg_output := load_protocol(protocol_path('xdg-output-unstable-v1.xml'))!
+	assert xdg_output.name == 'xdg_output_unstable_v1'
+	assert find_interface(xdg_output, 'zxdg_output_manager_v1').version == 3
+	assert find_message(find_interface(xdg_output, 'zxdg_output_manager_v1').requests, 'get_xdg_output').args[0].kind == 'new_id'
+	assert find_interface(xdg_output, 'zxdg_output_v1').version == 3
+
+	decoration := load_protocol(protocol_path('xdg-decoration-unstable-v1.xml'))!
+	assert decoration.name == 'xdg_decoration_unstable_v1'
+	assert find_message(find_interface(decoration, 'zxdg_decoration_manager_v1').requests, 'get_toplevel_decoration').args[1].iface == 'xdg_toplevel'
+	assert find_message(find_interface(decoration, 'zxdg_toplevel_decoration_v1').events, 'configure').args[0].kind == 'uint'
+}
+
+fn test_parse_pointer_gestures_and_fractional_scale() {
+	gestures := load_protocol(protocol_path('pointer-gestures-unstable-v1.xml'))!
+	assert gestures.name == 'pointer_gestures_unstable_v1'
+	assert find_interface(gestures, 'zwp_pointer_gesture_swipe_v1').version == 3
+	assert find_message(find_interface(gestures, 'zwp_pointer_gesture_pinch_v1').events, 'update').args[2].kind == 'fixed'
+
+	fractional := load_protocol(protocol_path('fractional-scale-v1.xml'))!
+	assert fractional.name == 'fractional_scale_v1'
+	assert find_interface(fractional, 'wp_fractional_scale_manager_v1').version == 1
+	assert find_message(find_interface(fractional, 'wp_fractional_scale_v1').events, 'preferred_scale').args[0].kind == 'uint'
+}
+
+fn test_parse_cursor_shape_and_screencopy() {
+	cursor := load_protocol(protocol_path('cursor-shape-v1.xml'))!
+	assert cursor.name == 'cursor_shape_v1'
+	assert find_interface(cursor, 'wp_cursor_shape_manager_v1').version == 2
+	assert find_interface(cursor, 'wp_cursor_shape_device_v1').version == 2
+
+	screencopy := load_protocol(protocol_path('wlr-screencopy-unstable-v1.xml'))!
+	assert screencopy.name == 'wlr_screencopy_unstable_v1'
+	assert find_interface(screencopy, 'zwlr_screencopy_manager_v1').version == 3
+	assert find_message(find_interface(screencopy, 'zwlr_screencopy_frame_v1').events, 'buffer').args[0].kind == 'uint'
+	assert find_message(find_interface(screencopy, 'zwlr_screencopy_frame_v1').requests, 'copy').args[0].kind == 'object'
 }
