@@ -32,8 +32,6 @@ fn new_pair() !(&Connection, int) {
 	return client, int(pair[1])
 }
 
-// V compiles each _test.v file on its own, so the helpers a test file needs are
-// defined in it rather than shared with the other test files of the module.
 fn event_bytes(object_id u32, opcode int, args []ArgValue) ([]u8, []int) {
 	mut encoder := new_encoder(object_id, opcode)
 	encoder.args(args)

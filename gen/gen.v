@@ -2,10 +2,7 @@ module gen
 
 import os
 
-// Orchestration: read protocols from XML, put every generated module into one
-// output directory, and let modules reference each other.
-
-// root_module is the V module name of the library itself. Generated modules
+/// root_module is the V module name of the library itself. Generated modules
 // import it for `wayland.Object`, `wayland.IfaceDesc` and the connection.
 const root_module = 'wayland'
 

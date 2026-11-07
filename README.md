@@ -3,9 +3,8 @@
 A Wayland client library for [V](https://vlang.io), written in pure V.
 
 * **No libwayland.** The wire protocol, the object id table, version negotiation and event dispatch are implemented here, in V.
-* **No C glue** beyond the descriptor calls V does not expose. The only file that declares C functions is `transport.v` — `sendmsg`/`recvmsg` to pass descriptors, `lseek` to rewind one — and everything it exposes is wrapped in safe helpers; shared memory is mapped through the standard library's `os.mmap`.
+* **No C glue** beyond the descriptor calls V does not expose.
 * **No `unsafe` in the API you use.** Marshalling, listening, id bookkeeping and file descriptor passing are all handled by the library.
-* **Generated from the protocol XML.** Interfaces, requests, events, enums, listeners and version negotiation are generated from the official XML files, so adding a protocol is one command. Generated code is `v fmt` clean.
 
 ```v
 import wayland
@@ -42,11 +41,6 @@ fn main() {
 	println('${listener.name}: capabilities ${listener.capabilities}')
 }
 ```
-
-The `as wl` is not decoration: the core protocol module is called `wayland`
-like the library itself, and a V file cannot import two modules with the same
-name. The generated modules import it the same way, so the two spellings are
-everywhere: `wayland.` for the library, `wl.` for the core protocol.
 
 ## Status
 
@@ -108,144 +102,6 @@ v run examples/layer_shell         # a top panel: anchored, with an exclusive zo
 v run examples/layer_shell -- --frames 120   # draw 120 frames, then exit
 v test .                           # unit, generator and end to end tests
 ```
-
-`fake_compositor_test.v` implements a compositor in the test file and drives a
-whole window through it: configure, ack, a shared memory buffer built from the
-descriptor the fake compositor receives, the frame callback, the close request
-and the teardown. It drives a layer surface through the same configure/ack
-handshake, and it also drives the keyboard - capabilities, the keymap
-arriving as a descriptor whose offset is already at the end (the way a
-compositor that wrote through the same descriptor leaves it), focus, key
-presses and releases - and the pointer: the enter at a fractional position,
-motion, a frame of scrolling with its source and steps, buttons, and the
-cursor requests that come back. The tests in `live_compositor_test.v` talk to
-the running compositor and are skipped when there is no Wayland session; they
-never attach a buffer, so they do not put a window on the screen.
-
-## Shared memory buffers
-
-`wayland.ShmBuffer` wraps the whole shared memory path: the file (created in
-`XDG_RUNTIME_DIR`, or the temporary directory, and unlinked right away), the
-mapping, the `wl_shm` pool and the `wl_buffer` on top of it. Pixels are a byte
-view of the mapping, so drawing is writing bytes; `attach()` attaches the buffer
-to a surface and damages all of it, and `busy` stays true until the compositor
-sends `wl_buffer.release`, which is what keeps a frame loop from drawing into a
-buffer that is still being read:
-
-```v
-mut buffer := wayland.ShmBuffer.new(shm, width, height, wl.wl_shm_format_xrgb8888)!
-mut pixels := buffer.pixels()
-pixels[0] = u8(0x40) // xrgb8888 stores four bytes per pixel, blue first
-buffer.attach(surface)!
-surface.commit()!
-```
-
-The helper accepts the 32 bit `wl_shm` formats, which is what every compositor
-supports. `examples/window` is the full version of the loop.
-
-## Keyboard input
-
-`wl_seat` reports what it has — keyboard, pointer, touch — and the keyboard it
-hands out sends **raw Linux evdev key codes**. Those name physical keys, not
-letters: key 1 is Escape whatever the layout is. `wayland.key_name()` names the
-common ones, and `wayland.read_keymap()` reads the xkb keymap the compositor
-sends as a file descriptor, which is what mapping a code to a keysym needs:
-
-```v
-fn (mut listener KeyboardListener) key(_proxy wl.WlKeyboard, _serial u32, _time u32, key u32, state u32) {
-	if state != wl.wl_keyboard_key_state_pressed {
-		return
-	}
-	if key == wayland.key_escape {
-		listener.close_requested = true
-	}
-}
-```
-
-`read_keymap()` takes the `format`, `fd` and `size` of the keymap event, owns
-the descriptor (it closes it) and returns the text without its terminating NUL.
-Two things about that descriptor are worth knowing, because libwayland hides
-both by mapping the file instead of reading it:
-
-* it shares **one file offset** with the compositor and with every other client
-  that received the same keymap, so a plain `read()` can start at the end and
-  return nothing at all. The helper rewinds it first, which is also why it keeps
-  working when the compositor sends the same description to client after client.
-* the file is usually already unlinked when the client sees it: the compositor
-  keeps it alive through the descriptors it sent, so there is no path left to
-  reopen (`/proc/self/fd/...` fails with `EACCES`).
-
-`examples/window` puts this together: it binds the seat the compositor
-advertises, creates the keyboard from the seat's capabilities, reads the keymap
-and closes when Escape is pressed.
-
-## Pointer input
-
-`wl_pointer` reports the pointer as groups of events that end with
-`wl_pointer.frame`: a scroll arrives as a value, a source and sometimes discrete
-steps, a drag as motion and buttons. `Pointer` collects them, so the frame loop
-reads state instead of implementing the whole event interface:
-
-```v
-mut pointer := wayland.Pointer.new(compositor, seat)! // from the seat capabilities
-mut cursor := wayland.ShmBuffer.new(shm, 24, 24, wl.wl_shm_format_argb8888)!
-...
-if pointer.inside { // x and y are the position in surface pixels
-	println('${pointer.x}, ${pointer.y}')
-}
-if delta := pointer.take_motion() {
-	println('moved ${delta.dx}, ${delta.dy}')
-}
-if scroll := pointer.take_scroll() {
-	println('scrolled ${scroll.y}, ${scroll.steps_y} steps')
-}
-if pointer.pressed(wayland.btn_left) {
-	toplevel.move(seat, pointer.serial)! // the grab takes the serial of the press
-}
-```
-
-The protocol asks clients to accumulate the events of a frame before acting, so
-the helper accumulates them: `take_motion()` and `take_scroll()` return what
-happened since the last call and forget it, and `take_frame()` says that a
-complete frame arrived. Scroll values are plain numbers (the 24.8 fixed point is
-converted), the steps come from `axis_discrete` or, on wl_pointer 8 and later,
-from the 120ths of `axis_value120`, and `stopped` is what kinetic scrolling
-waits for. Buttons are evdev codes, named by `button_name()`, and `serial` is
-the most recent serial from an enter or a button event, which is what
-`set_cursor()`, `xdg_toplevel.move()` and `xdg_toplevel.resize()` expect.
-
-A cursor is an image of yours: `set_cursor()` attaches it to the surface the
-pointer owns, damages it and hands it to the compositor, and `hide_cursor()`
-removes it. The cursor image only changes while the pointer is inside one of the
-client's surfaces, and the protocol leaves it undefined until the client sets
-one after an enter, so both need the serial of that enter.
-
-## Layer shell
-
-`wlr-layer-shell-v1` is the wlroots protocol behind panels, bars and
-wallpapers. It is generated like every other protocol module; the difference
-from a window is the role and the handshake. A `zwlr_layer_surface_v1` is
-configured by the compositor before it may map, and its anchors and exclusive
-zone decide where it sits. `examples/layer_shell` is a 32 pixel top panel:
-
-```v
-import wayland.protocols.wlr_layer_shell_unstable_v1 as layer_shell
-
-shell := layer_shell.bind_zwlr_layer_shell_v1(conn, shell_global)!
-surface := compositor.create_surface()!
-layer_surface := shell.get_layer_surface(surface, none, layer_shell.zwlr_layer_shell_v1_layer_top, 'my-panel')!
-layer_surface.set_size(0, 32) // width 0 + both side anchors: the compositor assigns it
-layer_surface.set_anchor(layer_shell.zwlr_layer_surface_v1_anchor_top |
-	layer_shell.zwlr_layer_surface_v1_anchor_left |
-	layer_shell.zwlr_layer_surface_v1_anchor_right)!
-layer_surface.set_exclusive_zone(32) // reserve the top 32 pixels for the panel
-layer_surface.set_keyboard_interactivity(layer_shell.zwlr_layer_surface_v1_keyboard_interactivity_none)!
-surface.commit()! // no buffer yet: this asks for the configure event
-// ack the configure in its listener, then attach a buffer and commit to map
-```
-
-Layer shell is a wlroots protocol, not a wayland-protocols one: bind it only
-when the compositor advertises `zwlr_layer_shell_v1`, the way the example does.
 
 ## Code generation
 
@@ -346,26 +202,3 @@ advertise.
 **Events you do not decode.** Objects registered with `opaque_iface` (for
 example a global whose protocol module you did not generate) drop their events
 instead of failing, so a partial protocol set keeps working.
-
-## Documentation
-
-* [`wayland.v`](wayland.v) — the module overview and connection helpers
-* [`connection.v`](connection.v) — `Connection`: dispatch, ids, requests
-* [`registry.v`](registry.v) — globals: discovery and binding
-* [`wire.v`](wire.v) and [`args.v`](args.v) — the wire format and argument values
-* [`shm.v`](shm.v) — shared memory buffers for drawing
-* [`input.v`](input.v) — key codes, names and reading the keymap
-* [`pointer.v`](pointer.v) — pointer state, per-frame deltas and cursors
-* [`fixed.v`](fixed.v) — the 24.8 fixed point numbers the wire uses
-* [`gen/emit.v`](gen/emit.v) — what a generated module looks like, and why
-* [`examples/seat`](examples/seat) — listeners end to end
-* [`examples/window`](examples/window) — a real window: roles, configure, frame loop, input
-* [`examples/layer_shell`](examples/layer_shell) — a top panel: the layer surface role and its anchors
-
-## Protocol files and license
-
-`protocols/xml` contains the protocol descriptions (the core `wayland.xml`, the
-stable wayland-protocols files and the wlr-protocols layer shell file), each
-under its original license and
-copyright, kept unchanged from the upstream releases. The generated modules in
-`protocols/*` derive from those files.

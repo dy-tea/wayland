@@ -91,7 +91,7 @@ pub fn load_protocol(path string) !Protocol {
 	}
 	mut protocol := Protocol{
 		name:    name
-		summary: summary_of(root)
+		summary: description_of(root)
 		source:  os.base(path)
 	}
 	if copyright := root.find_first('copyright') {
@@ -168,7 +168,7 @@ fn interface_from_xml(node &XmlNode, path string) !Interface {
 	mut iface := Interface{
 		name:    name
 		version: version
-		summary: summary_of(node)
+		summary: description_of(node)
 	}
 	for request in node.find_all('request') {
 		iface.requests << message_from_xml(request, iface.requests.len, path, true)!
@@ -193,7 +193,7 @@ fn message_from_xml(node &XmlNode, opcode int, path string, is_request bool) !Me
 		opcode:     opcode
 		since:      if since == 0 { u32(1) } else { since }
 		destructor: is_request && node.attr('type') == 'destructor'
-		summary:    summary_of(node)
+		summary:    description_of(node)
 	}
 	for arg_node in node.find_all('arg') {
 		message.args << arg_from_xml(arg_node, path)!
@@ -228,7 +228,7 @@ fn enum_from_xml(node &XmlNode, path string) !EnumType {
 	mut enum_type := EnumType{
 		name:     name
 		bitfield: node.attr('bitfield') == 'true'
-		summary:  summary_of(node)
+		summary:  description_of(node)
 	}
 	for entry_node in node.find_all('entry') {
 		entry_name := entry_node.attr('name')
@@ -293,26 +293,11 @@ pub fn clean_text(text string) string {
 	return out.bytestr()
 }
 
-// summary_of returns a one line description for a node: the `summary` attribute
-// when present, otherwise the first sentence of the `<description>` child.
-fn summary_of(node &XmlNode) string {
+fn description_of(node &XmlNode) string {
 	summary := node.attr('summary')
 	if summary != '' {
-		return truncate(clean_text(summary))
+		return clean_text(summary)
 	}
 	description := node.find_first('description') or { return '' }
-	plain := clean_text(description.text)
-	for i, c in plain.bytes() {
-		if c == u8(46) && i > 24 {
-			return truncate(plain[..i + 1])
-		}
-	}
-	return truncate(plain)
-}
-
-fn truncate(text string) string {
-	if text.len <= 110 {
-		return text
-	}
-	return text[..110] + '...'
+	return clean_text(description.text)
 }

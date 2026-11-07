@@ -58,7 +58,19 @@ fn test_names() {
 	assert kind_member('array') == 'array'
 	assert kind_member('new_id') == 'new_id'
 	assert proxy_fn('wl_surface') == 'wl_surface_proxy'
-	assert !comment_line('multi\nline\ntext').contains('\n')
+	// Descriptions keep their full text: long text continues on the next
+	// comment line instead of being cut off.
+	assert comment_lines('one two three') == ['one two three']
+	assert comment_lines('multi\nline\ntext') == ['multi line text']
+	mut long := ''
+	for i in 0 .. 40 {
+		long += 'word '
+	}
+	lines := comment_lines(long)
+	assert lines.len > 1
+	for line in lines {
+		assert line.len <= comment_width
+	}
 	// The core protocol module is named after the library module, so it gets an
 	// alias: a V file cannot import two modules under the same name.
 	assert alias_for_module('wayland') == 'wl'

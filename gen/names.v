@@ -123,9 +123,14 @@ pub fn proxy_fn(iface string) string {
 	return '${v_ident(iface)}_proxy'
 }
 
-// comment_line collapses text into a single safe V comment line.
-pub fn comment_line(text string) string {
-	return truncate(clean_text(text))
+// comment_width bounds the length of a generated comment line. Longer text
+// continues on the next line instead of being cut off.
+const comment_width = 74
+
+// comment_lines wraps text into comment lines, joined on single spaces with
+// the newlines of multi-line source text.
+pub fn comment_lines(text string) []string {
+	return wrap(clean_text(text), comment_width)
 }
 
 // v_method is the V name of a generated method.
