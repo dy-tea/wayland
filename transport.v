@@ -107,7 +107,7 @@ fn connect_socket(path string) !int {
 	if fd < 0 {
 		return error('could not create a unix socket')
 	}
-	if C.connect(fd, &addr, u32(sizeof(SockAddrUn))) != 0 {
+	if C.connect(fd, voidptr(&addr), u32(sizeof(SockAddrUn))) != 0 {
 		os.fd_close(fd)
 		return error('could not connect to wayland socket ${path}')
 	}
@@ -143,7 +143,7 @@ fn send_bytes(fd int, data []u8, fds []int) !int {
 		hdr.control = control.data
 		hdr.controllen = u64(control.len)
 	}
-	return C.sendmsg(fd, &hdr, 0)
+	return C.sendmsg(fd, voidptr(&hdr), 0)
 }
 
 // Received holds the result of a single socket read.
@@ -172,7 +172,7 @@ fn receive_bytes(fd int, max int, nonblocking bool) !Received {
 		controllen: u64(control.len)
 	}
 	flags := if nonblocking { int(C.MSG_DONTWAIT) } else { 0 }
-	n := C.recvmsg(fd, &hdr, flags)
+	n := C.recvmsg(fd, voidptr(&hdr), flags)
 	if n < 0 {
 		if nonblocking {
 			return Received{} // nothing to read right now
