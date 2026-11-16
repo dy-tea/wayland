@@ -53,7 +53,7 @@ pub mut:
 	// debug prints unhandled events and protocol oddities to stderr.
 	debug bool
 mut:
-	objects       []ObjectEntry
+	objects       map[u32]ObjectEntry
 	free_ids      []u32
 	next_id       u32 = 2
 	registry_id   u32
@@ -65,6 +65,15 @@ mut:
 	in_fds        []int
 	closed        bool
 }
+
+// server_id_start is where the compositor's own object ids begin: libwayland
+// servers allocate the ids of compositor created objects (every new_id that
+// arrives in an event, such as the data offers of wl_data_device and
+// wlr-data-control) from 0xff000000 up. These ids are far above anything the
+// client allocated, so the object table is a sparse map rather than an array
+// indexed by id. delete_id never arrives for them, and they are never handed
+// out again by alloc_id().
+const server_id_start = u32(0xff00_0000)
 
 // --- core protocol descriptions ---------------------------------------------
 //
@@ -218,16 +227,16 @@ pub const opaque_iface = IfaceDesc{
 // --- construction -----------------------------------------------------------
 
 fn new_connection(fd int) &Connection {
-	// Slot `id - 1` holds object `id`: slot 0 is wl_display (id 1).
-	mut objects := []ObjectEntry{len: 2}
-	objects[0] = ObjectEntry{
-		iface:  'wl_display'
-		desc:   &wl_display_iface
-		in_use: true
-	}
+	// The object table maps ids to their entries; id 1 is wl_display.
 	return &Connection{
 		fd:      fd
-		objects: objects
+		objects: {
+			1: ObjectEntry{
+				iface:  'wl_display'
+				desc:   &wl_display_iface
+				in_use: true
+			}
+		}
 	}
 }
 
@@ -259,50 +268,48 @@ pub fn (mut c Connection) close() {
 		c.fd = -1
 	}
 	c.closed = true
-	c.objects = []ObjectEntry{}
+	c.objects = map[u32]ObjectEntry{}
 	c.recv_buf = []u8{}
 	c.registry_id = 0
 	c.globals_cache = []Global{}
 }
 
-fn (c &Connection) entry_index(id u32) ?int {
-	if id == 0 || int(id) > c.objects.len {
+// entry returns the table entry of an id, if the id is known and in use.
+fn (c &Connection) entry(id u32) ?ObjectEntry {
+	if id == 0 {
 		return none
 	}
-	index := int(id) - 1
-	if !c.objects[index].in_use {
+	entry := c.objects[id] or { return none }
+	if !entry.in_use {
 		return none
 	}
-	return index
-}
-
-fn (mut c Connection) ensure_capacity(id u32) {
-	if int(id) > c.objects.len {
-		missing := int(id) - c.objects.len
-		c.objects << []ObjectEntry{len: missing}
-	}
+	return entry
 }
 
 // --- object table -----------------------------------------------------------
 
 // alloc_id reserves a fresh object id. Ids are recycled only after the
 // compositor confirms their destruction with wl_display.delete_id, exactly as
-// the protocol requires.
+// the protocol requires. The ids of the compositor's own objects
+// (server_id_start and up) never enter the free list, so they can not be
+// handed out again.
 pub fn (mut c Connection) alloc_id() !u32 {
 	if c.closed {
 		return error('the connection is closed')
 	}
 	for c.free_ids.len > 0 {
 		id := c.free_ids.pop()
-		index := int(id) - 1
-		if index < c.objects.len && !c.objects[index].in_use {
-			c.objects[index] = ObjectEntry{}
+		entry := c.objects[id] or { ObjectEntry{} }
+		if !entry.in_use {
+			c.objects[id] = ObjectEntry{}
 			return id
 		}
 	}
 	id := c.next_id
+	if id >= server_id_start {
+		return error('the connection ran out of object ids')
+	}
 	c.next_id++
-	c.ensure_capacity(id)
 	return id
 }
 
@@ -316,52 +323,58 @@ pub fn (mut c Connection) register_object(id u32, iface string, desc &IfaceDesc)
 	if c.closed {
 		return error('the connection is closed')
 	}
-	c.ensure_capacity(id)
-	index := int(id) - 1
-	if c.objects[index].in_use {
+	entry := c.objects[id] or { ObjectEntry{} }
+	if entry.in_use {
 		return error('object id ${id} is already in use')
 	}
-	c.objects[index] = ObjectEntry{
+	c.objects[id] = ObjectEntry{
 		iface:  iface
 		desc:   desc
 		in_use: true
 	}
-	if id >= c.next_id {
+	// Compositor created ids live in the server's own range; they must not
+	// drag the client's allocation up into it.
+	if id < server_id_start && id >= c.next_id {
 		c.next_id = id + 1
 	}
 }
 
 // set_sink installs the handler that receives this object's events.
 pub fn (mut c Connection) set_sink(id u32, sink EventSink) ! {
-	index := c.entry_index(id) or { return error('cannot listen on unknown object ${id}') }
-	c.objects[index].sink = sink
+	mut entry := c.entry(id) or { return error('cannot listen on unknown object ${id}') }
+	entry.sink = sink
+	c.objects[id] = entry
 }
 
 // destroy_object marks an object as destroyed after its destructor request was
 // sent. Further requests on it fail, and the id is recycled once the compositor
 // sends wl_display.delete_id.
 pub fn (mut c Connection) destroy_object(id u32) {
-	index := c.entry_index(id) or { return }
-	c.objects[index].destroyed = true
+	mut entry := c.entry(id) or { return }
+	entry.destroyed = true
+	c.objects[id] = entry
 }
 
 // object_destroyed reports whether an object id is known and already destroyed.
 pub fn (c &Connection) object_destroyed(id u32) bool {
-	index := c.entry_index(id) or { return true }
-	return c.objects[index].destroyed
+	entry := c.entry(id) or { return true }
+	return entry.destroyed
 }
 
-// release_id frees an id confirmed as deleted by the compositor.
+// release_id frees an id confirmed as deleted by the compositor. The ids of
+// compositor created objects stay out of the free list: they belong to the
+// compositor's own id space, and reusing them could collide with its next
+// allocation.
 fn (mut c Connection) release_id(id u32) {
-	if id <= c.display_id || int(id) > c.objects.len {
+	if id <= c.display_id {
 		return
 	}
-	index := int(id) - 1
-	if !c.objects[index].in_use {
-		return
+	mut entry := c.entry(id) or { return }
+	entry.in_use = false
+	c.objects[id] = entry
+	if id < server_id_start {
+		c.free_ids << id
 	}
-	c.objects[index] = ObjectEntry{}
-	c.free_ids << id
 }
 
 // --- sending ----------------------------------------------------------------
@@ -374,8 +387,7 @@ pub fn (mut c Connection) request(object_id u32, opcode int, args []ArgValue) ! 
 	if c.closed {
 		return error('the connection is closed')
 	}
-	index := c.entry_index(object_id) or { return error('request on unknown object ${object_id}') }
-	entry := c.objects[index]
+	entry := c.entry(object_id) or { return error('request on unknown object ${object_id}') }
 	if entry.destroyed {
 		return error('request on destroyed object ${object_id} (${entry.iface})')
 	}
@@ -494,13 +506,12 @@ fn (mut c Connection) parse_message() !Message {
 	}
 	body := c.recv_buf[c.recv_pos + wire_header_size..c.recv_pos + size].clone()
 	c.recv_pos += size
-	index := c.entry_index(object_id) or {
+	entry := c.entry(object_id) or {
 		return Message{
 			object_id: object_id
 			opcode:    opcode
 		}
 	}
-	entry := c.objects[index]
 	if entry.desc == unsafe { nil } {
 		return Message{
 			object_id: object_id
@@ -562,12 +573,13 @@ pub fn (mut c Connection) dispatch_message(msg &Message) ! {
 			else {}
 		}
 	}
-	index := c.entry_index(msg.object_id) or { return }
-	if c.objects[index].desc == unsafe { nil } {
+	entry := c.entry(msg.object_id) or { return }
+	if entry.desc == unsafe { nil } {
 		return
 	}
-	iface_name := c.objects[index].iface
-	handled := c.objects[index].sink.on_event(msg)!
+	iface_name := entry.iface
+	mut sink := entry.sink
+	handled := sink.on_event(msg)!
 	if !handled && c.debug {
 		eprintln('wayland: unhandled ${iface_name} event ${msg.opcode}')
 	}

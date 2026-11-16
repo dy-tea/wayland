@@ -3,6 +3,7 @@ module wayland
 import os
 import wayland.protocols.viewporter
 import wayland.protocols.wayland
+import wayland.protocols.wlr_data_control_unstable_v1 as data_control
 import wayland.protocols.wlr_layer_shell_unstable_v1 as layer_shell
 import wayland.protocols.xdg_shell
 
@@ -1317,4 +1318,116 @@ fn test_wlr_layer_surface_flow() {
 	assert !layer_surface.is_alive()
 	assert !shell.is_alive()
 	assert !surface.is_alive()
+}
+
+// --- compositor created object ids -------------------------------------------
+//
+// Every new_id that arrives in an event (the data offers of wl_data_device and
+// wlr-data-control, the objects of tablet and input timestamp protocols) is
+// allocated by the compositor from its own id space, which starts at
+// 0xff000000. The object table has to hold those ids without growing to them,
+// and the client must never recycle or hand them out again.
+
+struct ServerIdState {
+mut:
+	mimes    []string
+	selected bool
+}
+
+struct ServerIdOfferListener {
+mut:
+	state &ServerIdState
+}
+
+fn (mut listener ServerIdOfferListener) offer(_ data_control.ZwlrDataControlOfferV1, mime_type string) {
+	listener.state.mimes << mime_type
+}
+
+struct ServerIdDeviceListener {
+mut:
+	state &ServerIdState
+}
+
+fn (mut listener ServerIdDeviceListener) data_offer(_ data_control.ZwlrDataControlDeviceV1, offer data_control.ZwlrDataControlOfferV1) {
+	offer.set_listener(&ServerIdOfferListener{
+		state: listener.state
+	}) or { return }
+}
+
+fn (mut listener ServerIdDeviceListener) selection(_ data_control.ZwlrDataControlDeviceV1, _offer ?data_control.ZwlrDataControlOfferV1) {
+	listener.state.selected = true
+}
+
+fn (mut listener ServerIdDeviceListener) primary_selection(_ data_control.ZwlrDataControlDeviceV1, _offer ?data_control.ZwlrDataControlOfferV1) {
+}
+
+fn (mut listener ServerIdDeviceListener) finished(_ data_control.ZwlrDataControlDeviceV1) {
+}
+
+fn test_compositor_created_object_ids() {
+	mut client, server_fd := new_pair()!
+	defer {
+		client.close()
+		os.fd_close(server_fd)
+	}
+	// A compositor with a seat and the data control manager, version 2.
+	seat_global, _ := event_bytes(u32(2), 0, [ArgValue(u32(1)), ArgValue('wl_seat'), ArgValue(u32(9))])
+	manager_global, _ := event_bytes(u32(2), 0, [
+		ArgValue(u32(2)),
+		ArgValue('zwlr_data_control_manager_v1'),
+		ArgValue(u32(2)),
+	])
+	done, _ := event_bytes(u32(3), 0, [ArgValue(u32(1))])
+	server_write(server_fd, join_bytes([seat_global, manager_global, done]), [])!
+
+	globals := client.globals()!
+	seat := wayland.bind_wl_seat(client, globals.find('wl_seat')!)!
+	manager := data_control.bind_zwlr_data_control_manager_v1(client, globals.find('zwlr_data_control_manager_v1')!)!
+	device := manager.get_data_device(seat)!
+	assert seat.id == 4
+	assert device.id == 6
+	mut state := ServerIdState{}
+	device.set_listener(&ServerIdDeviceListener{
+		state: &state
+	})!
+	client.flush()!
+	server_read_available(server_fd)!
+
+	// The compositor introduces an offer from its own id space: data_offer
+	// announces the object, the offer events on it name the MIME types, and
+	// selection completes the batch.
+	server_id := server_id_start
+	data_offer, _ := event_bytes(device.id, 0, [ArgValue(ObjectRef{
+		id: server_id
+	})])
+	mime, _ := event_bytes(server_id, 0, [ArgValue('text/plain;charset=utf-8')])
+	selection, _ := event_bytes(device.id, 1, [ArgValue(ObjectRef{
+		id: server_id
+	})])
+	server_write(server_fd, join_bytes([data_offer, mime, selection]), [])!
+	assert client.dispatch_pending()! == 3
+	assert state.selected
+	assert state.mimes == ['text/plain;charset=utf-8']
+	assert client.objects[server_id].iface == 'zwlr_data_control_offer_v1'
+
+	// Destroying the compositor's offer sends the destructor to its id, and
+	// the id never enters the client's free list.
+	offer := data_control.zwlr_data_control_offer_v1_proxy(client, server_id)
+	offer.destroy()!
+	client.flush()!
+	destroyed := server_read_available(server_fd)!
+	assert get_u32_at(destroyed.data, 0) == server_id_start
+	assert int(get_u32_at(destroyed.data, 4) & 0xffff) == 1 // zwlr_data_control_offer_v1.destroy
+	assert client.free_ids.len == 0
+
+	// libwayland servers never confirm their own ids with wl_display.delete_id,
+	// but the connection refuses to recycle them even if one arrived.
+	delete_id, _ := event_bytes(u32(1), 1, [ArgValue(server_id)])
+	server_write(server_fd, delete_id, [])!
+	assert client.dispatch_pending()! == 1
+	assert client.free_ids.len == 0
+
+	// The next id the client allocates continues its own sequence, unharmed by
+	// the compositor's ids in the table.
+	assert client.alloc_id()! == 7
 }

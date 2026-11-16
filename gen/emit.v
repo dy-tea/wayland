@@ -476,7 +476,9 @@ fn (mut e Emitter) emit_request(iface &Interface, request &Message) {
 		arg := new_ids[0]
 		name := v_ident(arg.name)
 		if e.is_typed(arg.iface) {
-			e.line('\treturn ${type_name(arg.iface)}{')
+			// type_for is module qualified for the interfaces of the other
+			// protocols in the run, exactly like the return type above.
+			e.line('\treturn ${e.type_for(arg.iface)}{')
 			e.line('\t\tObject: ${name}_object')
 			e.line('\t}')
 		} else {

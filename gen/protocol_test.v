@@ -265,6 +265,63 @@ fn test_emit_uses_externs_for_other_protocols() {
 	assert !plain.contains('wayland.WlSurface')
 }
 
+fn test_parse_idle_notify_output_power_and_data_control() {
+	idle := load_protocol(protocol_path('ext-idle-notify-v1.xml'))!
+	assert idle.name == 'ext_idle_notify_v1'
+	assert find_interface(idle, 'ext_idle_notifier_v1').version == 2
+	get_idle := find_message(find_interface(idle, 'ext_idle_notifier_v1').requests, 'get_idle_notification')
+	assert get_idle.args.len == 3
+	assert get_idle.args[0].kind == 'new_id'
+	assert get_idle.args[1].kind == 'uint'
+	assert get_idle.args[2].iface == 'wl_seat'
+	// Version 2 added a variant that only watches input devices.
+	assert find_message(find_interface(idle, 'ext_idle_notifier_v1').requests, 'get_input_idle_notification').since == 2
+	assert find_message(find_interface(idle, 'ext_idle_notification_v1').events, 'idled').args.len == 0
+	assert find_message(find_interface(idle, 'ext_idle_notification_v1').events, 'resumed').args.len == 0
+
+	power := load_protocol(protocol_path('wlr-output-power-management-unstable-v1.xml'))!
+	assert power.name == 'wlr_output_power_management_unstable_v1'
+	assert find_interface(power, 'zwlr_output_power_manager_v1').version == 1
+	set_mode := find_message(find_interface(power, 'zwlr_output_power_v1').requests, 'set_mode')
+	assert set_mode.args.len == 1
+	assert set_mode.args[0].kind == 'uint'
+	assert set_mode.args[0].enum_name == 'mode'
+	assert find_message(find_interface(power, 'zwlr_output_power_v1').events, 'mode').args[0].kind == 'uint'
+	assert find_message(find_interface(power, 'zwlr_output_power_v1').events, 'failed').args.len == 0
+
+	data_control := load_protocol(protocol_path('wlr-data-control-unstable-v1.xml'))!
+	assert data_control.name == 'wlr_data_control_unstable_v1'
+	get_device := find_message(find_interface(data_control, 'zwlr_data_control_manager_v1').requests, 'get_data_device')
+	assert get_device.args[1].iface == 'wl_seat'
+	device := find_interface(data_control, 'zwlr_data_control_device_v1')
+	// Both selections are announced with a nullable offer: nothing means the
+	// selection was cleared. The primary selection arrived with version 2.
+	assert find_message(device.events, 'selection').args[0].nullable
+	assert find_message(device.events, 'primary_selection').since == 2
+	receive := find_message(find_interface(data_control, 'zwlr_data_control_offer_v1').requests, 'receive')
+	assert receive.args[0].kind == 'string'
+	assert receive.args[1].kind == 'fd'
+	send := find_message(find_interface(data_control, 'zwlr_data_control_source_v1').events, 'send')
+	assert send.args[1].kind == 'fd'
+}
+
+fn test_emit_external_new_id_return() {
+	// A request whose new_id names an interface of another protocol returns
+	// the module qualified type, in the signature and in the body:
+	// wp_single_pixel_buffer_manager_v1.create_buffer hands out wl_buffer,
+	// which lives in the core protocol module. The first protocol that
+	// exercised this produced a bare `return WlBuffer{`, which did not
+	// compile.
+	wayland := load_protocol(protocol_path('wayland.xml'))!
+	pixel := load_protocol(protocol_path('single-pixel-buffer-v1.xml'))!
+	externs := externs_for([&wayland, &pixel], 'wayland.protocols', 'single_pixel_buffer_v1')
+	source := emit_module(&pixel, EmitOptions{
+		externs: externs
+	})!
+	assert source.contains('create_u32_rgba_buffer(r u32, g u32, b u32, a u32) !wl.WlBuffer {')
+	assert source.contains('return wl.WlBuffer{')
+}
+
 fn test_every_vendored_protocol_generates() {
 	files := protocol_files([os.join_path(@DIR, '..', 'protocols', 'xml')])!
 	assert files.len >= 5

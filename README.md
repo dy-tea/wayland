@@ -48,10 +48,14 @@ What works today:
 
 * connecting over `WAYLAND_SOCKET`, `WAYLAND_DISPLAY` or `XDG_RUNTIME_DIR`
 * global discovery, binding with version negotiation, untyped and typed binding
-* generated proxies for the core protocol, `xdg-shell`, `viewporter`,
-  `presentation-time`, `xdg-output`, `xdg-decoration`, `cursor-shape`,
-  `fractional-scale`, `pointer-gestures`, `wlr-layer-shell-v1` and
-  `wlr-screencopy-v1`, plus whatever else you point the generator at
+* generated proxies for 23 protocols: the core protocol, `xdg-shell`,
+  `viewporter`, `presentation-time`, `xdg-output`, `xdg-decoration`,
+  `cursor-shape`, `fractional-scale`, `pointer-gestures`, `wlr-layer-shell-v1`,
+  `wlr-screencopy-v1`, `single-pixel-buffer`, `content-type`, `xdg-activation`,
+  `ext-idle-notify`, `tearing-control`, `alpha-modifier`, `idle-inhibit`,
+  `relative-pointer`, `pointer-constraints`, `primary-selection`,
+  `wlr-output-power-management` and `wlr-data-control`, plus whatever else
+  you point the generator at
 * request marshalling with typed arguments, including `new_id` arguments (which
   return a proxy for the object the compositor creates)
 * event decoding and dispatch to `mut` listener methods, including nullable
@@ -76,12 +80,20 @@ What works today:
   grabs need, hands out the motion and the scroll of a frame, and sets a cursor
   image; `examples/window` drags itself with the left button and changes speed
   when scrolled
+* idle and power: `examples/idle_notify` follows the user's idle state through
+  `ext-idle-notify-v1`, and `examples/output_power` reports the DPMS mode of
+  every output and switches it with `--off`/`--on` through
+  `wlr-output-power-management-v1`
+* clipboard: `examples/clipboard` watches the clipboard and the primary
+  selection through `wlr-data-control-v1` and dumps their text - or puts text
+  on the clipboard with `--set`, which passes file descriptors in both
+  directions on the same protocol
 
 What is not here yet:
 
 * the server side (implementing a compositor), and protocol *helpers* above the
   generated layer: a reusable window type, and the rest of the input side
-  (touch, clipboard, cursor themes - the cursor is an image you draw, since
+  (touch, cursor themes - the cursor is an image you draw, since
   reading the Xcursor files of a theme is a file format of its own)
 * text: turning a key code into a character needs xkb state, which lives in
   `libxkbcommon`. `read_keymap()` hands over the keymap text; interpreting it is
@@ -102,6 +114,9 @@ v run examples/window              # a window: close it, press Escape, drag it, 
 v run examples/window -- --frames 60   # present 60 frames, then exit
 v run examples/layer_shell         # a top panel: anchored, with an exclusive zone
 v run examples/layer_shell -- --frames 120   # draw 120 frames, then exit
+v run examples/idle_notify         # watch the user go idle and come back
+v run examples/output_power        # the DPMS mode of every output; --off blanks them
+v run examples/clipboard           # watch the clipboard; --set puts text on it
 v test .                           # unit, generator and end to end tests
 ```
 
@@ -179,7 +194,11 @@ and outputs appearing at run time, take your own registry with
 
 **Ids.** Ids start at 2 (`wl_display` is 1). A released id is recycled only
 after the compositor sends `wl_display.delete_id` for it, exactly as the
-protocol requires, and the free list is checked before the counter grows.
+protocol requires, and the free list is checked before the counter grows. The
+table itself is a sparse map, because objects the *compositor* creates (every
+`new_id` that arrives in an event, such as data offers) carry ids from its own
+space at `0xff000000` and up: they are stored like any other id, but they never
+arrive in a `delete_id` and are never handed out again by the client.
 
 **File descriptors** travel as SCM_RIGHTS ancillary data, which is the one thing
 that cannot be expressed in V alone. `transport.v` mirrors `struct msghdr`,
