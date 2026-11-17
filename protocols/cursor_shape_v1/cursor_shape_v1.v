@@ -21,6 +21,7 @@
 module cursor_shape_v1
 
 import wayland
+import wayland.protocols.tablet_unstable_v2
 import wayland.protocols.wayland as wl
 
 // wp_cursor_shape_manager_v1
@@ -122,7 +123,7 @@ pub fn (proxy &WpCursorShapeManagerV1) get_pointer(pointer wl.WlPointer) !WpCurs
 // Obtain a wp_cursor_shape_device_v1 for a zwp_tablet_tool_v2 object. When
 // the zwp_tablet_tool_v2 is removed, the wp_cursor_shape_device_v1 object
 // becomes inert.
-pub fn (proxy &WpCursorShapeManagerV1) get_tablet_tool_v2(tablet_tool wayland.Object) !WpCursorShapeDeviceV1 {
+pub fn (proxy &WpCursorShapeManagerV1) get_tablet_tool_v2(tablet_tool tablet_unstable_v2.ZwpTabletToolV2) !WpCursorShapeDeviceV1 {
 	cursor_shape_device_id := proxy.conn.alloc_id()!
 	cursor_shape_device_object := wayland.Object{
 		id:    cursor_shape_device_id

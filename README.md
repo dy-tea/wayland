@@ -48,14 +48,19 @@ What works today:
 
 * connecting over `WAYLAND_SOCKET`, `WAYLAND_DISPLAY` or `XDG_RUNTIME_DIR`
 * global discovery, binding with version negotiation, untyped and typed binding
-* generated proxies for 23 protocols: the core protocol, `xdg-shell`,
+* generated proxies for 42 protocols: the core protocol, `xdg-shell`,
   `viewporter`, `presentation-time`, `xdg-output`, `xdg-decoration`,
   `cursor-shape`, `fractional-scale`, `pointer-gestures`, `wlr-layer-shell-v1`,
   `wlr-screencopy-v1`, `single-pixel-buffer`, `content-type`, `xdg-activation`,
   `ext-idle-notify`, `tearing-control`, `alpha-modifier`, `idle-inhibit`,
   `relative-pointer`, `pointer-constraints`, `primary-selection`,
-  `wlr-output-power-management` and `wlr-data-control`, plus whatever else
-  you point the generator at
+  `wlr-output-power-management`, `wlr-data-control`, `ext-session-lock`,
+  `ext-foreign-toplevel-list`, `ext-transient-seat`, `security-context`,
+  `xdg-toplevel-drag`, `xdg-toplevel-icon`, `xdg-dialog`, `xdg-system-bell`,
+  `pointer-warp`, `commit-timing`, `ext-image-capture-source`,
+  `ext-image-copy-capture`, `linux-dmabuf`, `keyboard-shortcuts-inhibit`,
+  `tablet-v2`, `xdg-foreign`, `text-input-v3`, `wlr-virtual-pointer` and
+  `virtual-keyboard`, plus whatever else you point the generator at
 * request marshalling with typed arguments, including `new_id` arguments (which
   return a proxy for the object the compositor creates)
 * event decoding and dispatch to `mut` listener methods, including nullable
@@ -88,6 +93,20 @@ What works today:
   selection through `wlr-data-control-v1` and dumps their text - or puts text
   on the clipboard with `--set`, which passes file descriptors in both
   directions on the same protocol
+* screenshots: `examples/screenshot` copies an output into a PPM image -
+  through `ext-image-copy-capture-v1` when the compositor has it (the session
+  announces its constraints, the client attaches a buffer and captures), with
+  `wlr-screencopy-v1` as the fallback, which is the order grim picks; either
+  way the buffer is a shared memory pool whose stride the compositor dictates
+* windows as data: `examples/toplevels` follows every open window of the
+  session through `ext-foreign-toplevel-list-v1`, with the stable identifier
+  that survives title changes
+* locking the session: `examples/session_lock` does what a screen locker
+  does with `ext-session-lock-v1` - a lock surface per output, animation,
+  and unlock_and_destroy() when a key is pressed
+* synthetic input: `examples/virtual_pointer` moves the real pointer in a
+  circle, clicks and scrolls through `wlr-virtual-pointer-v1`, the protocol
+  remote desktop viewers and input remappers are built on
 
 What is not here yet:
 
@@ -117,6 +136,11 @@ v run examples/layer_shell -- --frames 120   # draw 120 frames, then exit
 v run examples/idle_notify         # watch the user go idle and come back
 v run examples/output_power        # the DPMS mode of every output; --off blanks them
 v run examples/clipboard           # watch the clipboard; --set puts text on it
+v run examples/screenshot          # capture an output into screenshot.ppm
+v run examples/screenshot -- --output DP-1 --out /tmp/shot.ppm --cursor
+v run examples/toplevels           # every open window, live; --once prints and exits
+v run examples/session_lock        # lock the session; unlock with any key press
+v run examples/session_lock -- --frames 120   # present 120 frames, then unlock
 v test .                           # unit, generator and end to end tests
 ```
 

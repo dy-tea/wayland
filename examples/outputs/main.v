@@ -25,7 +25,7 @@ struct Output {
 mut:
 	// label and summary come from xdg-output. The label is the connector, the
 	// "eDP-1", "HDMI-A-2" and friends of /sys.
-	label  string
+	label   string
 	summary string
 	// x, y, logical_width and logical_height are the logical position and size
 	// from xdg-output, in compositor coordinates: this is what toplevel
