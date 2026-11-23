@@ -48,10 +48,10 @@ What works today:
 
 * connecting over `WAYLAND_SOCKET`, `WAYLAND_DISPLAY` or `XDG_RUNTIME_DIR`
 * global discovery, binding with version negotiation, untyped and typed binding
-* generated proxies for 42 protocols: the core protocol, `xdg-shell`,
+* generated proxies for 65 protocols: the core protocol, `xdg-shell`,
   `viewporter`, `presentation-time`, `xdg-output`, `xdg-decoration`,
   `cursor-shape`, `fractional-scale`, `pointer-gestures`, `wlr-layer-shell-v1`,
-  `wlr-screencopy-v1`, `single-pixel-buffer`, `content-type`, `xdg-activation`,
+  `wlr-screencopy-v1`, `single-pixel-buffer`, `content-type`, `color-management`, `xdg-activation`,
   `ext-idle-notify`, `tearing-control`, `alpha-modifier`, `idle-inhibit`,
   `relative-pointer`, `pointer-constraints`, `primary-selection`,
   `wlr-output-power-management`, `wlr-data-control`, `ext-session-lock`,
