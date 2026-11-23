@@ -33,8 +33,6 @@ mut:
 
 // Connection is a connection to a Wayland compositor.
 //
-// Connection is a connection to a Wayland compositor.
-//
 // It is created with `connect()` and drives the protocol with `dispatch()`,
 // `dispatch_pending()`, `roundtrip()` and `flush()`. Request methods generated
 // from protocol XML files (for example `WlSurface.attach`) marshal and queue

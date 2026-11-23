@@ -1,0 +1,26 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - "*"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup V
+        uses: vlang/setup-v@v1.4
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Tests
+        run: v test .
+
+      - name: Build examples
+        run: |
+          for dir in examples/*; do
+            v $dir
+          done
